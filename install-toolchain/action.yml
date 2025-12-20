@@ -168,5 +168,5 @@ runs:
       if: ${{ runner.os == 'Linux' && inputs.docs == 'true' }}
       uses: stormbytepp/githubactions/install-cached@master
       with:
-        packages: 'doxygen doxygen-latex doxygen-doc graphviz python3-sphinx python3-sphinx-rtd-theme'
+        packages: 'doxygen doxygen-doc graphviz python3-sphinx python3-sphinx-rtd-theme'
         cache-key: 'doc-tools-linux'
