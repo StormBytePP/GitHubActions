@@ -1,0 +1,157 @@
+name: Cache and Setup Compiler Toolchain
+description: Caches and sets up compiler toolchains to speed up subsequent installations in GitHub Actions workflows.
+author: David C. Manuelda
+email: StormByte@gmail.com
+branding:
+  icon: 'settings'
+  color: 'green'
+
+inputs:
+  toolchain:
+    description: 'The name of the compiler toolchain to install and cache (gcc, clang or clang-libc++).'
+    required: true
+    default: ''
+  docs:
+    description: 'Whether to install documentation generation tools (Doxygen, Sphinx, etc.) along with the toolchain.'
+    required: false
+    default: 'false'
+
+outputs:
+  c_compiler:
+    description: 'Path to C compiler selected.'
+    value: ${{ steps.set-outputs.outputs.c_compiler }}
+  cxx_compiler:
+    description: 'Path to C++ compiler selected.'
+    value: ${{ steps.set-outputs.outputs.cxx_compiler }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Check toolchain input (Linux only)
+      if: runner.os == 'Linux'
+      run: |
+        if [[ "${{ inputs.toolchain }}" != "gcc" && "${{ inputs.toolchain }}" != "clang" && "${{ inputs.toolchain }}" != "clang-libc++" ]]; then
+          echo "Error: Unsupported toolchain '${{ inputs.toolchain }}'. Supported toolchains are: gcc, clang, clang-libc++."
+          exit 1
+        fi
+    - name: Check toolchain input (Windows only)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        if ("${{ inputs.toolchain }}" -ne "msvc") {
+          Write-Error "Error: Unsupported toolchain '${{ inputs.toolchain }}'. Only msvc is supported."
+          exit 1
+        }
+
+    # Ninja is common for both Linux and Windows
+    - name: Install Ninja
+      uses: ashutoshvarma/setup-ninja@master
+
+    - name: Install toolchain (Linux gcc-14)
+      if: runner.os == 'Linux' && (${{ inputs.toolchain }} == 'gcc')
+      uses: ../install-cached
+      with:
+        packages: 'build-essential gcc-14 g++-14 cmake meson'
+        cache-key: 'toolchain-gcc-14'
+
+    - name: Register and set GCC alternatives (Linux)
+      if: runner.os == 'Linux' && inputs.compiler == 'gcc'
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
+        sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
+        sudo update-alternatives --set gcc /usr/bin/gcc-14
+        sudo update-alternatives --set g++ /usr/bin/g++-14
+
+    - name: Install toolchain (Linux clang-20)
+      if: runner.os == 'Linux' && (${{ inputs.toolchain }} == 'clang')
+      uses: ../install-cached
+      with:
+        packages: 'build-essential clang-20 clang++-20 cmake meson'
+        cache-key: 'toolchain-clang-20'
+
+    - name: Install toolchain (Linux clang-20 with libc++)
+      if: runner.os == 'Linux' && (${{ inputs.toolchain }} == 'clang-libc++')
+      uses: ../install-cached
+      with:
+        packages: 'build-essential clang-20 clang++-20 libc++-20 libc++abi-20 clang-format-20 clang-tidy-20 cmake meson'
+        cache-key: 'toolchain-clang-libc++-20'
+
+    - name: Register and set Clang alternatives (Linux)
+      if: runner.os == 'Linux' && ( ${{ inputs.toolchain }} == 'clang' || ${{ inputs.toolchain }} == 'clang-libc++' )
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo update-alternatives --remove-all clang || true
+        sudo update-alternatives --remove-all clang++ || true
+        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 200 --slave /usr/bin/clang++ clang++ /usr/bin/clang++-20 200 || true
+
+    - name: Install toolchain (Windows MSVC)
+      if: runner.os == 'Windows' && (${{ inputs.toolchain }} == 'msvc')
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: 'x64'
+
+    - name: Install toolchain extras (Windows MSVC)
+      if: runner.os == 'Windows' && (${{ inputs.toolchain }} == 'msvc')
+      shell: pwsh
+      run: |
+        # Install latest Meson via pip into user site-packages
+        python -m pip install --upgrade pip setuptools wheel
+        python -m pip install --upgrade --user meson
+
+        # Determine the user Scripts folder using site.USER_BASE; fallback to searching AppData
+        try {
+          $userBase = python -c "import site, sys; print(site.USER_BASE)"
+        } catch {
+          $userBase = $null
+        }
+        if ($userBase) {
+          $scripts = Join-Path $userBase 'Scripts'
+        } else {
+          $scripts = $null
+          $appRoaming = Join-Path $env:USERPROFILE 'AppData\Roaming\Python'
+          if (Test-Path $appRoaming) {
+            $found = Get-ChildItem -Path $appRoaming -Directory -Recurse -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName 'Scripts') } | Select-Object -First 1
+            if ($found) { $scripts = Join-Path $found.FullName 'Scripts' }
+          }
+        }
+        if ($scripts -and (Test-Path $scripts)) {
+          Write-Host "Adding user Scripts path to PATH: $scripts"
+          Add-Content -Path $Env:GITHUB_PATH -Value $scripts
+          $env:PATH = "$scripts;$env:PATH"
+        } else {
+          # Fallback: add known runner path where pip often installs scripts
+          $hard = 'C:\Users\runneradmin\AppData\Roaming\Python\Python39\Scripts'
+          if (Test-Path $hard) {
+            Write-Host "Adding hardcoded Scripts path to PATH: $hard"
+            Add-Content -Path $Env:GITHUB_PATH -Value $hard
+            $env:PATH = "$hard;$env:PATH"
+          } else {
+            Write-Host "Warning: could not determine user Scripts path; pip reported its location in its output." -ForegroundColor Yellow
+          }
+        }
+        meson --version
+
+    - name: Set outputs
+      id: set-outputs
+      shell: bash
+      run: |
+        if [[ "${{ inputs.compiler }}" == "gcc" ]]; then
+          echo "c_compiler=/usr/bin/gcc" >> "$GITHUB_OUTPUT"
+          echo "cxx_compiler=/usr/bin/g++" >> "$GITHUB_OUTPUT"
+        elif [[ "${{ inputs.compiler }}" == "clang" ]]; then
+          echo "c_compiler=/usr/bin/clang" >> "$GITHUB_OUTPUT"
+          echo "cxx_compiler=/usr/bin/clang++" >> "$GITHUB_OUTPUT"
+        else
+          echo "c_compiler=cl" >> "$GITHUB_OUTPUT"
+          echo "cxx_compiler=cl" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Install documentation tools (Linux)
+      if: runner.os == 'Linux' && ( ${{ inputs.docs }} == 'true' )
+      uses: ../install-cached
+      with:
+        packages: 'doxygen doxygen-latex doxygen-doc graphviz python3-sphinx python3-sphinx-rtd-theme'
+        cache-key: 'doc-tools-linux'

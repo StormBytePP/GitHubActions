@@ -1,0 +1,73 @@
+name: Generate and Upload Documentation
+description: Build documentation and upload a GitHub Pages artifact (composite action).
+author: David C. Manuelda
+email: StormByte@gmail.com
+branding:
+  icon: 'help-circle'
+  color: 'white'
+
+inputs:
+  doc_target:
+    description: 'CMake target to build documentation'
+    required: true
+    type: string
+  docs_source_dir:
+    description: 'Directory containing generated documentation (relative to workspace)'
+    required: false
+    type: string
+    default: './docs'
+  extra-cmake-options:
+    description: 'Additional CMake configuration options'
+    required: false
+    type: string
+    default: ''
+  extra-install:
+    description: 'Space-separated list of extra apt packages to install on the runner'
+    required: false
+    type: string
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        recursive: true
+
+    - name: Install toolchain
+      uses: ../install-toolchain
+      with:
+        toolchain: clang
+        docs: true
+
+    - name: Install extra apt packages
+      if: ${{ inputs.extra-install != '' }}
+      uses: ../install-cached
+      with:
+        packages: ${{ inputs.extra-install }}
+        cache-key: 'extra-apt-packages-${{ inputs.extra-install }}'
+
+    - name: Build with CMake
+      uses: ashutoshvarma/action-cmake-build@master
+      with:
+        build-dir: ${{ github.workspace }}/build
+        cc: /usr/bin/clang
+        cxx: /usr/bin/clang++
+        configure-options: >-
+          -G Ninja
+          -DWITH_STORMBYTE=BUNDLED
+          -DENABLE_DOC=ON
+          ${{ inputs.extra-cmake-options }}
+        build-type: Release
+        target: ${{ inputs.doc_target }}
+
+    - name: Build with Jekyll
+      uses: actions/jekyll-build-pages@v1
+      with:
+        source: ${{ inputs.docs_source_dir }}
+        destination: ./_site
+
+    - name: Upload Pages artifact
+      uses: actions/upload-pages-artifact@v3
