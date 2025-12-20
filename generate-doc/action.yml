@@ -42,12 +42,20 @@ runs:
         toolchain: clang
         docs: true
 
+    - name: Prepare cache key
+      if: ${{ inputs.extra-install != '' }}
+      id: cachekey
+      shell: bash
+      run: |
+        san=$(printf '%s' "${{ inputs.extra-install }}" | tr -d ' ')
+        echo "cache_key=extra-apt-packages-${san}" >> $GITHUB_OUTPUT
+
     - name: Install extra apt packages
       if: ${{ inputs.extra-install != '' }}
       uses: stormbytepp/githubactions/install-cached@master
       with:
         packages: ${{ inputs.extra-install }}
-        cache-key: 'extra-apt-packages-${{ inputs.extra-install }}'
+        cache-key: ${{ steps.cachekey.outputs.cache_key }}
 
     - name: Build with CMake
       uses: ashutoshvarma/action-cmake-build@master
