@@ -28,14 +28,15 @@ runs:
   using: "composite"
   steps:
     - name: Check toolchain input (Linux only)
-      if: runner.os == 'Linux'
+      if: ${{ runner.os == 'Linux' }}
+      shell: bash
       run: |
         if [[ "${{ inputs.toolchain }}" != "gcc" && "${{ inputs.toolchain }}" != "clang" && "${{ inputs.toolchain }}" != "clang-libc++" ]]; then
           echo "Error: Unsupported toolchain '${{ inputs.toolchain }}'. Supported toolchains are: gcc, clang, clang-libc++."
           exit 1
         fi
     - name: Check toolchain input (Windows only)
-      if: runner.os == 'Windows'
+      if: ${{ runner.os == 'Windows' }}
       shell: pwsh
       run: |
         if ("${{ inputs.toolchain }}" -ne "msvc") {
@@ -48,14 +49,14 @@ runs:
       uses: ashutoshvarma/setup-ninja@master
 
     - name: Install toolchain (Linux gcc-14)
-      if: runner.os == 'Linux' && (${{ inputs.toolchain }} == 'gcc')
-      uses: ../install-cached
+      if: ${{ runner.os == 'Linux' && inputs.toolchain == 'gcc' }}
+      uses: stormbytepp/githubactions/install-cached@master
       with:
         packages: 'build-essential gcc-14 g++-14 cmake meson'
         cache-key: 'toolchain-gcc-14'
 
     - name: Register and set GCC alternatives (Linux)
-      if: runner.os == 'Linux' && inputs.compiler == 'gcc'
+      if: ${{ runner.os == 'Linux' && inputs.toolchain == 'gcc' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -65,36 +66,36 @@ runs:
         sudo update-alternatives --set g++ /usr/bin/g++-14
 
     - name: Install toolchain (Linux clang-20)
-      if: runner.os == 'Linux' && (${{ inputs.toolchain }} == 'clang')
-      uses: ../install-cached
+      if: ${{ runner.os == 'Linux' && inputs.toolchain == 'clang' }}
+      uses: stormbytepp/githubactions/install-cached@master
       with:
         packages: 'build-essential clang-20 clang++-20 cmake meson'
         cache-key: 'toolchain-clang-20'
 
     - name: Install toolchain (Linux clang-20 with libc++)
-      if: runner.os == 'Linux' && (${{ inputs.toolchain }} == 'clang-libc++')
-      uses: ../install-cached
+      if: ${{ runner.os == 'Linux' && inputs.toolchain == 'clang-libc++' }}
+      uses: stormbytepp/githubactions/install-cached@master
       with:
-        packages: 'build-essential clang-20 clang++-20 libc++-20 libc++abi-20 clang-format-20 clang-tidy-20 cmake meson'
+        packages: 'build-essential clang-20 clang++-20 libc++-20-dev libc++abi-20-dev clang-format-20 clang-tidy-20 cmake meson'
         cache-key: 'toolchain-clang-libc++-20'
 
     - name: Register and set Clang alternatives (Linux)
-      if: runner.os == 'Linux' && ( ${{ inputs.toolchain }} == 'clang' || ${{ inputs.toolchain }} == 'clang-libc++' )
+      if: ${{ runner.os == 'Linux' && (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++') }}
       shell: bash
       run: |
         set -euo pipefail
         sudo update-alternatives --remove-all clang || true
         sudo update-alternatives --remove-all clang++ || true
-        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 200 --slave /usr/bin/clang++ clang++ /usr/bin/clang++-20 200 || true
+        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 200 --slave /usr/bin/clang++ clang++ /usr/bin/clang++-20 || true
 
     - name: Install toolchain (Windows MSVC)
-      if: runner.os == 'Windows' && (${{ inputs.toolchain }} == 'msvc')
+      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' }}
       uses: ilammy/msvc-dev-cmd@v1
       with:
         arch: 'x64'
 
     - name: Install toolchain extras (Windows MSVC)
-      if: runner.os == 'Windows' && (${{ inputs.toolchain }} == 'msvc')
+      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' }}
       shell: pwsh
       run: |
         # Install latest Meson via pip into user site-packages
@@ -138,10 +139,10 @@ runs:
       id: set-outputs
       shell: bash
       run: |
-        if [[ "${{ inputs.compiler }}" == "gcc" ]]; then
+        if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
           echo "c_compiler=/usr/bin/gcc" >> "$GITHUB_OUTPUT"
           echo "cxx_compiler=/usr/bin/g++" >> "$GITHUB_OUTPUT"
-        elif [[ "${{ inputs.compiler }}" == "clang" ]]; then
+        elif [[ "${{ inputs.toolchain }}" == "clang" || "${{ inputs.toolchain }}" == "clang-libc++" ]]; then
           echo "c_compiler=/usr/bin/clang" >> "$GITHUB_OUTPUT"
           echo "cxx_compiler=/usr/bin/clang++" >> "$GITHUB_OUTPUT"
         else
@@ -149,9 +150,23 @@ runs:
           echo "cxx_compiler=cl" >> "$GITHUB_OUTPUT"
         fi
 
+    - name: Export CC/CXX to job environment
+      shell: bash
+      run: |
+        if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
+          echo "CC=/usr/bin/gcc" >> "$GITHUB_ENV"
+          echo "CXX=/usr/bin/g++" >> "$GITHUB_ENV"
+        elif [[ "${{ inputs.toolchain }}" == "clang" || "${{ inputs.toolchain }}" == "clang-libc++" ]]; then
+          echo "CC=/usr/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=/usr/bin/clang++" >> "$GITHUB_ENV"
+        else
+          echo "CC=cl" >> "$GITHUB_ENV"
+          echo "CXX=cl" >> "$GITHUB_ENV"
+        fi
+
     - name: Install documentation tools (Linux)
-      if: runner.os == 'Linux' && ( ${{ inputs.docs }} == 'true' )
-      uses: ../install-cached
+      if: ${{ runner.os == 'Linux' && inputs.docs == 'true' }}
+      uses: stormbytepp/githubactions/install-cached@master
       with:
         packages: 'doxygen doxygen-latex doxygen-doc graphviz python3-sphinx python3-sphinx-rtd-theme'
         cache-key: 'doc-tools-linux'

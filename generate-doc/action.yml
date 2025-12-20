@@ -34,17 +34,17 @@ runs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-        recursive: true
+        submodules: true
 
     - name: Install toolchain
-      uses: ../install-toolchain
+      uses: stormbytepp/githubactions/install-toolchain@master
       with:
         toolchain: clang
         docs: true
 
     - name: Install extra apt packages
       if: ${{ inputs.extra-install != '' }}
-      uses: ../install-cached
+      uses: stormbytepp/githubactions/install-cached@master
       with:
         packages: ${{ inputs.extra-install }}
         cache-key: 'extra-apt-packages-${{ inputs.extra-install }}'
