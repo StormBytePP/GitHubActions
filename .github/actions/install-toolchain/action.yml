@@ -182,7 +182,7 @@ runs:
       if: ${{ runner.os == 'Linux' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
-        packages: 'bison flex'
+        packages: 'bison flex sed'
         cache-key: 'toolchain-extras-linux'
 
     - name: Install extras (Windows)
