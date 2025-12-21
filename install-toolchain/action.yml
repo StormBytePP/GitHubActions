@@ -178,9 +178,15 @@ runs:
         packages: 'doxygen doxygen-doc graphviz python3-sphinx python3-sphinx-rtd-theme'
         cache-key: 'doc-tools-linux'
 
-    - name: Install extras
+    - name: Install extras (Linux)
       if: ${{ runner.os == 'Linux' }}
       uses: stormbytepp/githubactions/install-cached@master
       with:
-        packages: 'meson bison flex'
+        packages: 'bison flex'
         cache-key: 'toolchain-extras-linux'
+
+    - name: Install extras (Windows)
+      if: ${{ runner.os == 'Windows' }}
+      shell: pwsh
+      run: |
+        choco install winflexbison -y
