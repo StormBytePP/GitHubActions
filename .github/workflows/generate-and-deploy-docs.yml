@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: stormbytepp/githubactions/generate-doc@master
+      - uses: stormbytepp/githubactions/.github/actions/generate-doc@master
         with:
           doc_target: ${{ inputs.doc_target }}
           extra-cmake-options: ${{ inputs.extra-cmake-options }}

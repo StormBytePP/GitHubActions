@@ -37,7 +37,7 @@ runs:
         submodules: true
 
     - name: Install toolchain
-      uses: stormbytepp/githubactions/install-toolchain@master
+      uses: stormbytepp/githubactions/.github/actions/install-toolchain@master
       with:
         toolchain: clang
         docs: true
@@ -52,7 +52,7 @@ runs:
 
     - name: Install extra apt packages
       if: ${{ inputs.extra-install != '' }}
-      uses: stormbytepp/githubactions/install-cached@master
+      uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
         packages: ${{ inputs.extra-install }}
         cache-key: ${{ steps.cachekey.outputs.cache_key }}
@@ -65,8 +65,6 @@ runs:
         cxx: /usr/bin/clang++
         configure-options: >-
           -G Ninja
-          -DWITH_STORMBYTE=BUNDLED
-          -DENABLE_DOC=ON
           ${{ inputs.extra-cmake-options }}
         build-type: Release
         target: ${{ inputs.doc_target }}

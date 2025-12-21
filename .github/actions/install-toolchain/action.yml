@@ -61,7 +61,7 @@ runs:
 
     - name: Install toolchain (Linux gcc-14)
       if: ${{ runner.os == 'Linux' && inputs.toolchain == 'gcc' }}
-      uses: stormbytepp/githubactions/install-cached@master
+      uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
         packages: 'build-essential gcc-14 g++-14 cmake'
         cache-key: 'toolchain-gcc-14'
@@ -78,14 +78,14 @@ runs:
 
     - name: Install toolchain (Linux clang-20)
       if: ${{ runner.os == 'Linux' && inputs.toolchain == 'clang' }}
-      uses: stormbytepp/githubactions/install-cached@master
+      uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
         packages: 'build-essential clang-20 clang++-20 cmake'
         cache-key: 'toolchain-clang-20'
 
     - name: Install toolchain (Linux clang-20 with libc++)
       if: ${{ runner.os == 'Linux' && inputs.toolchain == 'clang-libc++' }}
-      uses: stormbytepp/githubactions/install-cached@master
+      uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
         packages: 'build-essential clang-20 clang++-20 libc++-20-dev libc++abi-20-dev clang-format-20 clang-tidy-20 cmake'
         cache-key: 'toolchain-clang-libc++-20'
@@ -173,14 +173,14 @@ runs:
 
     - name: Install documentation tools (Linux)
       if: ${{ runner.os == 'Linux' && inputs.docs == 'true' }}
-      uses: stormbytepp/githubactions/install-cached@master
+      uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
         packages: 'doxygen doxygen-doc graphviz python3-sphinx python3-sphinx-rtd-theme'
         cache-key: 'doc-tools-linux'
 
     - name: Install extras (Linux)
       if: ${{ runner.os == 'Linux' }}
-      uses: stormbytepp/githubactions/install-cached@master
+      uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
         packages: 'bison flex'
         cache-key: 'toolchain-extras-linux'
