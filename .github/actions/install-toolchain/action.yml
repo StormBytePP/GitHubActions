@@ -176,14 +176,14 @@ runs:
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
         packages: 'doxygen doxygen-doc graphviz python3-sphinx python3-sphinx-rtd-theme'
-        cache-key: 'doc-tools-linux'
+        cache-key: 'doc-tools-linux-v1'
 
     - name: Install extras (Linux)
       if: ${{ runner.os == 'Linux' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
         packages: 'bison flex sed'
-        cache-key: 'toolchain-extras-linux'
+        cache-key: 'toolchain-extras-linux-v1'
 
     - name: Install extras (Windows)
       if: ${{ runner.os == 'Windows' }}
