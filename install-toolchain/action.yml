@@ -170,3 +170,10 @@ runs:
       with:
         packages: 'doxygen doxygen-doc graphviz python3-sphinx python3-sphinx-rtd-theme'
         cache-key: 'doc-tools-linux'
+
+    - name: Install extras
+      if: ${{ runner.os == 'Linux' }}
+      uses: stormbytepp/githubactions/install-cached@master
+      with:
+        packages: 'meson bison flex'
+        cache-key: 'toolchain-extras-linux'
