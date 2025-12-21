@@ -182,11 +182,11 @@ runs:
       if: ${{ runner.os == 'Linux' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
-        packages: 'bison flex sed'
+        packages: 'bison flex sed nasm yasm git'
         cache-key: 'toolchain-extras-linux-v1'
 
     - name: Install extras (Windows)
       if: ${{ runner.os == 'Windows' }}
       shell: pwsh
       run: |
-        choco install winflexbison -y
+        choco install winflexbison nasm -y
