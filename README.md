@@ -17,3 +17,22 @@ See each linked README for full usage, inputs, and external dependencies.
 License
 -------
 This repository is licensed under the MIT License — see `LICENSE.txt` at the repository root.
+
+Examples
+--------
+Save updated ccache only on successful job:
+
+```yaml
+# Place this after your build steps so the cache contains the final compiled artifacts.
+- name: Save updated ccache (only on success)
+  if: ${{ success() && env.CCACHE_FULL_KEY != '' }}
+  uses: actions/cache@v4
+  with:
+    path: ~/.ccache
+    key: ${{ env.CCACHE_FULL_KEY }}
+```
+
+Notes:
+- `success()` ensures the step runs only when the job completes successfully (avoids saving partial caches on failure).
+- `env.CCACHE_FULL_KEY` is produced by the `install-toolchain` action when you pass `ccache-key` and the action computes the full key.
+

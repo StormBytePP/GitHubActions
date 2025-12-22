@@ -15,6 +15,14 @@ inputs:
     description: 'Whether to install documentation generation tools (Doxygen, Sphinx, etc.) along with the toolchain.'
     required: false
     default: 'false'
+  version:
+    description: 'Optional toolchain major version (single value for gcc/clang). Leave empty to use sensible defaults.'
+    required: false
+    default: ''
+  ccache-key:
+    description: 'Optional cache key for ccache. If empty, ccache restore/save is disabled.'
+    required: false
+    default: ''
 
 outputs:
   c_compiler:
@@ -27,6 +35,41 @@ outputs:
 runs:
   using: "composite"
   steps:
+    - name: Set and validate toolchain version input
+      shell: bash
+      run: |
+        set -euo pipefail
+        # If using MSVC, the single version input must not be set
+        if [[ "${{ inputs.toolchain }}" == "msvc" && -n "${{ inputs.version }}" ]]; then
+          echo "Error: 'version' must not be set when toolchain is 'msvc'" >&2
+          exit 1
+        fi
+
+        VER="${{ inputs.version }}"
+
+        # Choose sensible defaults per toolchain when VER is empty
+        if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
+          if [[ -z "$VER" ]]; then
+            GCC_VER=14
+          else
+            GCC_VER="$VER"
+          fi
+          CLANG_VER=20
+        elif [[ "${{ inputs.toolchain }}" == "clang" || "${{ inputs.toolchain }}" == "clang-libc++" ]]; then
+          if [[ -z "$VER" ]]; then
+            CLANG_VER=20
+          else
+            CLANG_VER="$VER"
+          fi
+          GCC_VER=14
+        else
+          # default fallback
+          GCC_VER=14
+          CLANG_VER=20
+        fi
+
+        echo "GCC_VERSION=$GCC_VER" >> "$GITHUB_ENV"
+        echo "CLANG_VERSION=$CLANG_VER" >> "$GITHUB_ENV"
     - name: Check toolchain input (Linux only)
       if: ${{ runner.os == 'Linux' }}
       shell: bash
@@ -59,36 +102,36 @@ runs:
         pip install meson==1.4.0
         meson --version
 
-    - name: Install toolchain (Linux gcc-14)
+    - name: Install toolchain (Linux gcc-${{ env.GCC_VERSION }})
       if: ${{ runner.os == 'Linux' && inputs.toolchain == 'gcc' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
-        packages: 'build-essential gcc-14 g++-14 cmake'
-        cache-key: 'toolchain-gcc-14'
+        packages: 'build-essential gcc-${{ env.GCC_VERSION }} g++-${{ env.GCC_VERSION }} cmake'
+        cache-key: 'toolchain-gcc-${{ env.GCC_VERSION }}'
 
     - name: Register and set GCC alternatives (Linux)
       if: ${{ runner.os == 'Linux' && inputs.toolchain == 'gcc' }}
       shell: bash
       run: |
         set -euo pipefail
-        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 140
-        sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 140
-        sudo update-alternatives --set gcc /usr/bin/gcc-14
-        sudo update-alternatives --set g++ /usr/bin/g++-14
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-${{ env.GCC_VERSION }} 140
+        sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-${{ env.GCC_VERSION }} 140
+        sudo update-alternatives --set gcc /usr/bin/gcc-${{ env.GCC_VERSION }}
+        sudo update-alternatives --set g++ /usr/bin/g++-${{ env.GCC_VERSION }}
 
     - name: Install toolchain (Linux clang-20)
       if: ${{ runner.os == 'Linux' && inputs.toolchain == 'clang' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
-        packages: 'build-essential clang-20 clang++-20 cmake'
-        cache-key: 'toolchain-clang-20'
+        packages: 'build-essential clang-${{ env.CLANG_VERSION }} clang++-${{ env.CLANG_VERSION }} cmake'
+        cache-key: 'toolchain-clang-${{ env.CLANG_VERSION }}'
 
     - name: Install toolchain (Linux clang-20 with libc++)
       if: ${{ runner.os == 'Linux' && inputs.toolchain == 'clang-libc++' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
-        packages: 'build-essential clang-20 clang++-20 libc++-20-dev libc++abi-20-dev clang-format-20 clang-tidy-20 cmake'
-        cache-key: 'toolchain-clang-libc++-20'
+        packages: 'build-essential clang-${{ env.CLANG_VERSION }} clang++-${{ env.CLANG_VERSION }} libc++-${{ env.CLANG_VERSION }}-dev libc++abi-${{ env.CLANG_VERSION }}-dev clang-format-${{ env.CLANG_VERSION }} clang-tidy-${{ env.CLANG_VERSION }} cmake'
+        cache-key: 'toolchain-clang-libc++-${{ env.CLANG_VERSION }}'
 
     - name: Register and set Clang alternatives (Linux)
       if: ${{ runner.os == 'Linux' && (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++') }}
@@ -97,7 +140,123 @@ runs:
         set -euo pipefail
         sudo update-alternatives --remove-all clang || true
         sudo update-alternatives --remove-all clang++ || true
-        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 200 --slave /usr/bin/clang++ clang++ /usr/bin/clang++-20 || true
+        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${{ env.CLANG_VERSION }} 200 --slave /usr/bin/clang++ clang++ /usr/bin/clang++-${{ env.CLANG_VERSION }} || true
+
+    - name: Install ccache (Linux)
+      if: ${{ runner.os == 'Linux' && inputs.ccache-key != '' }}
+      uses: stormbytepp/githubactions/.github/actions/install-cached@master
+      with:
+        packages: 'ccache'
+        cache-key: 'ccache-linux-v1'
+
+    - name: Ensure ccache symlinks are first in PATH (Linux)
+      if: ${{ runner.os == 'Linux' && inputs.ccache-key != '' }}
+      shell: bash
+      run: |
+        CCACHE_BIN=""
+        if [ -d /usr/lib/ccache ]; then
+          CCACHE_BIN=/usr/lib/ccache
+        elif [ -d /usr/lib64/ccache ]; then
+          CCACHE_BIN=/usr/lib64/ccache
+        fi
+        if [ -n "$CCACHE_BIN" ]; then
+          echo "PATH=$CCACHE_BIN:$PATH" >> "$GITHUB_ENV"
+        fi
+
+    - name: Configure ccache (Linux)
+      if: ${{ runner.os == 'Linux' && inputs.ccache-key != '' }}
+      shell: bash
+      run: |
+        # Use runtime $HOME so composite action doesn't rely on unavailable expression contexts
+        echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+        echo "CCACHE_MAXSIZE=2G" >> "$GITHUB_ENV"
+        mkdir -p "$HOME/.ccache"
+        ccache -M 2G || true
+
+    - name: Determine toolchain cache version (Linux)
+      if: ${{ runner.os == 'Linux' }}
+      shell: bash
+      run: |
+        if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
+          echo "TOOLCHAIN_VERSION=${GCC_VERSION}" >> "$GITHUB_ENV"
+        elif [[ "${{ inputs.toolchain }}" == "clang" || "${{ inputs.toolchain }}" == "clang-libc++" ]]; then
+          echo "TOOLCHAIN_VERSION=${CLANG_VERSION}" >> "$GITHUB_ENV"
+        else
+          echo "TOOLCHAIN_VERSION=default" >> "$GITHUB_ENV"
+        fi
+
+    - name: Install clcache (Windows MSVC)
+      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' && inputs.ccache-key != '' }}
+      shell: pwsh
+      run: |
+        # Install clcache for MSVC via pip (user install)
+        pip install --user clcache
+        # Determine user Scripts path (where pip places executables) and add it to PATH
+        try {
+          $userBase = python -c "import site; print(site.USER_BASE)"
+        } catch {
+          $userBase = $null
+        }
+        if ($userBase) {
+          $scripts = Join-Path $userBase 'Scripts'
+        } else {
+          $scripts = $null
+          $appRoaming = Join-Path $env:USERPROFILE 'AppData\Roaming\Python'
+          if (Test-Path $appRoaming) {
+            $found = Get-ChildItem -Path $appRoaming -Directory -Recurse -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName 'Scripts') } | Select-Object -First 1
+            if ($found) { $scripts = Join-Path $found.FullName 'Scripts' }
+          }
+        }
+        if ($scripts -and (Test-Path $scripts)) {
+          Write-Host "Adding user Scripts path to PATH: $scripts"
+          Add-Content -Path $Env:GITHUB_PATH -Value $scripts
+          $env:PATH = "$scripts;$env:PATH"
+        } else {
+          Write-Host "Warning: could not determine user Scripts path for clcache; clcache may not be available." -ForegroundColor Yellow
+        }
+
+    - name: Configure clcache (Windows MSVC)
+      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' && inputs.ccache-key != '' }}
+      shell: pwsh
+      run: |
+        # Set a predictable cache directory for clcache and ensure it exists
+        $cldir = Join-Path $env:USERPROFILE '.clcache'
+        Add-Content -Path $Env:GITHUB_ENV -Value "CL_CACHE_DIR=$cldir"
+        if (-not (Test-Path $cldir)) { New-Item -ItemType Directory -Path $cldir | Out-Null }
+
+    - name: Set static clcache key (Windows)
+      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' && inputs.ccache-key != '' }}
+      shell: pwsh
+      run: |
+        # Use a static key for clcache; user can change this value in the workflow later if desired
+        Add-Content -Path $Env:GITHUB_ENV -Value "CLCACHE_KEY=msvc-v1"
+
+    - name: Compute ccache full key (Linux)
+      if: ${{ runner.os == 'Linux' && inputs.ccache-key != '' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        USER_SUFFIX="${{ inputs.ccache-key }}"
+        # sanitize: replace spaces and slashes with '-' and remove problematic chars
+        SANITIZED=$(echo "$USER_SUFFIX" | tr ' /' '-' | sed 's/[^A-Za-z0-9._+-]/-/g')
+        FULL_KEY="${{ inputs.toolchain }}-${TOOLCHAIN_VERSION}-${SANITIZED}"
+        echo "CCACHE_FULL_KEY=$FULL_KEY" >> "$GITHUB_ENV"
+
+    - name: Restore ccache (Linux)
+      if: ${{ runner.os == 'Linux' && inputs.ccache-key != '' }}
+      uses: actions/cache@v4
+      with:
+        path: ~/.ccache
+        key: ${{ env.CCACHE_FULL_KEY }}
+        restore-keys: ${{ inputs.toolchain }}-${{ env.TOOLCHAIN_VERSION }}-
+
+    - name: Restore clcache (Windows)
+      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' && inputs.ccache-key != '' }}
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.CL_CACHE_DIR }}
+        key: ${{ env.CLCACHE_KEY }}
+        restore-keys: ${{ runner.os }}-msvc-
 
     - name: Install toolchain (Windows MSVC)
       if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' }}
@@ -142,30 +301,15 @@ runs:
         }
         meson --version
 
-    - name: Set outputs
-      id: set-outputs
-      shell: bash
-      run: |
-        if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
-          echo "c_compiler=/usr/bin/gcc" >> "$GITHUB_OUTPUT"
-          echo "cxx_compiler=/usr/bin/g++" >> "$GITHUB_OUTPUT"
-        elif [[ "${{ inputs.toolchain }}" == "clang" || "${{ inputs.toolchain }}" == "clang-libc++" ]]; then
-          echo "c_compiler=/usr/bin/clang" >> "$GITHUB_OUTPUT"
-          echo "cxx_compiler=/usr/bin/clang++" >> "$GITHUB_OUTPUT"
-        else
-          echo "c_compiler=cl" >> "$GITHUB_OUTPUT"
-          echo "cxx_compiler=cl" >> "$GITHUB_OUTPUT"
-        fi
-
     - name: Export CC/CXX to job environment
       shell: bash
       run: |
         if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
-          echo "CC=/usr/bin/gcc" >> "$GITHUB_ENV"
-          echo "CXX=/usr/bin/g++" >> "$GITHUB_ENV"
+          echo "CC=gcc" >> "$GITHUB_ENV"
+          echo "CXX=g++" >> "$GITHUB_ENV"
         elif [[ "${{ inputs.toolchain }}" == "clang" || "${{ inputs.toolchain }}" == "clang-libc++" ]]; then
-          echo "CC=/usr/bin/clang" >> "$GITHUB_ENV"
-          echo "CXX=/usr/bin/clang++" >> "$GITHUB_ENV"
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
         else
           echo "CC=cl" >> "$GITHUB_ENV"
           echo "CXX=cl" >> "$GITHUB_ENV"
@@ -190,3 +334,32 @@ runs:
       shell: pwsh
       run: |
         choco install winflexbison nasm -y
+
+    - name: Set outputs
+      id: set-outputs
+      shell: bash
+      run: |
+        if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
+          echo "c_compiler=gcc" >> "$GITHUB_OUTPUT"
+          echo "cxx_compiler=g++" >> "$GITHUB_OUTPUT"
+        elif [[ "${{ inputs.toolchain }}" == "clang" || "${{ inputs.toolchain }}" == "clang-libc++" ]]; then
+          echo "c_compiler=clang" >> "$GITHUB_OUTPUT"
+          echo "cxx_compiler=clang++" >> "$GITHUB_OUTPUT"
+        else
+          echo "c_compiler=cl" >> "$GITHUB_OUTPUT"
+          echo "cxx_compiler=cl" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Save updated ccache (only on success)
+      if: ${{ success() && env.CCACHE_FULL_KEY != '' }}
+      uses: actions/cache@v4
+      with:
+        path: ~/.ccache
+        key: ${{ env.CCACHE_FULL_KEY }}
+
+    - name: Save clcache (Windows, only on success)
+      if: ${{ success() && env.CLCACHE_KEY != '' }}
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.CL_CACHE_DIR }}
+        key: ${{ env.CLCACHE_KEY }}
