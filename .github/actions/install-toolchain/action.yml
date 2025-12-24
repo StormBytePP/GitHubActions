@@ -351,12 +351,30 @@ runs:
           echo "cxx_compiler=cl" >> "$GITHUB_OUTPUT"
         fi
 
+    - name: Randomized delay before saving ccache (Linux)
+      if: ${{ success() && env.CCACHE_FULL_KEY != '' && steps.restore-ccache.outputs.cache-hit != 'true' && runner.os == 'Linux' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        SLEEP=$(( (RANDOM % 15) + 1 ))
+        echo "Sleeping ${SLEEP}s to stagger cache saves"
+        sleep $SLEEP
+
     - name: Save updated ccache (only on success and on cache-miss)
       if: ${{ success() && env.CCACHE_FULL_KEY != '' && steps.restore-ccache.outputs.cache-hit != 'true' }}
       uses: actions/cache@v4
       with:
         path: ${{ env.CCACHE_DIR }}
         key: ${{ env.CCACHE_FULL_KEY }}
+
+    - name: Randomized delay before saving clcache (Windows)
+      if: ${{ success() && env.CLCACHE_KEY != '' && steps.restore-clcache.outputs.cache-hit != 'true' && runner.os == 'Windows' }}
+      shell: pwsh
+      run: |
+        $rand = Get-Random -Maximum 15
+        $sleep = $rand + 1
+        Write-Host "Sleeping ${sleep}s to stagger cache saves"
+        Start-Sleep -Seconds $sleep
 
     - name: Save clcache (Windows, only on success and on cache-miss)
       if: ${{ success() && env.CLCACHE_KEY != '' && steps.restore-clcache.outputs.cache-hit != 'true' }}
