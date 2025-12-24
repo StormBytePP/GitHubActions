@@ -35,11 +35,24 @@ outputs:
 runs:
   using: "composite"
   steps:
+
+    ###########################################################################
+    # 0. EARLY CREATION OF CCACHE DIRECTORY (fixes post-job cache issues)
+    ###########################################################################
+    - name: Ensure ccache directory exists early (Linux)
+      if: ${{ runner.os == 'Linux' && inputs.ccache-key != '' }}
+      shell: bash
+      run: |
+        mkdir -p "$HOME/.ccache"
+        echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+
+    ###########################################################################
+    # 1. VERSION RESOLUTION
+    ###########################################################################
     - name: Set and validate toolchain version input
       shell: bash
       run: |
         set -euo pipefail
-        # If using MSVC, the single version input must not be set
         if [[ "${{ inputs.toolchain }}" == "msvc" && -n "${{ inputs.version }}" ]]; then
           echo "Error: 'version' must not be set when toolchain is 'msvc'" >&2
           exit 1
@@ -47,47 +60,41 @@ runs:
 
         VER="${{ inputs.version }}"
 
-        # Choose sensible defaults per toolchain when VER is empty
         if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
-          if [[ -z "$VER" ]]; then
-            GCC_VER=14
-          else
-            GCC_VER="$VER"
-          fi
+          GCC_VER="${VER:-14}"
           CLANG_VER=20
         elif [[ "${{ inputs.toolchain }}" == "clang" || "${{ inputs.toolchain }}" == "clang-libc++" ]]; then
-          if [[ -z "$VER" ]]; then
-            CLANG_VER=20
-          else
-            CLANG_VER="$VER"
-          fi
+          CLANG_VER="${VER:-20}"
           GCC_VER=14
         else
-          # default fallback
           GCC_VER=14
           CLANG_VER=20
         fi
 
         echo "GCC_VERSION=$GCC_VER" >> "$GITHUB_ENV"
         echo "CLANG_VERSION=$CLANG_VER" >> "$GITHUB_ENV"
+
     - name: Check toolchain input (Linux only)
       if: ${{ runner.os == 'Linux' }}
       shell: bash
       run: |
         if [[ "${{ inputs.toolchain }}" != "gcc" && "${{ inputs.toolchain }}" != "clang" && "${{ inputs.toolchain }}" != "clang-libc++" ]]; then
-          echo "Error: Unsupported toolchain '${{ inputs.toolchain }}'. Supported toolchains are: gcc, clang, clang-libc++."
+          echo "Error: Unsupported toolchain '${{ inputs.toolchain }}'. Supported: gcc, clang, clang-libc++."
           exit 1
         fi
+
     - name: Check toolchain input (Windows only)
       if: ${{ runner.os == 'Windows' }}
       shell: pwsh
       run: |
         if ("${{ inputs.toolchain }}" -ne "msvc") {
-          Write-Error "Error: Unsupported toolchain '${{ inputs.toolchain }}'. Only msvc is supported."
+          Write-Error "Unsupported toolchain '${{ inputs.toolchain }}'. Only msvc is supported."
           exit 1
         }
 
-    # Ninja is common for both Linux and Windows
+    ###########################################################################
+    # 2. COMMON TOOLS
+    ###########################################################################
     - name: Install Ninja
       uses: ashutoshvarma/setup-ninja@master
 
@@ -102,78 +109,75 @@ runs:
         pip install meson==1.4.0
         meson --version
 
-    - name: Install toolchain (Linux gcc-${{ env.GCC_VERSION }})
+    ###########################################################################
+    # 3. TOOLCHAIN INSTALLATION (LINUX)
+    ###########################################################################
+    - name: Install toolchain (Linux gcc)
       if: ${{ runner.os == 'Linux' && inputs.toolchain == 'gcc' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
-        packages: 'build-essential gcc-${{ env.GCC_VERSION }} g++-${{ env.GCC_VERSION }} cmake'
-        cache-key: 'toolchain-gcc-${{ env.GCC_VERSION }}'
+        packages: "build-essential gcc-${{ env.GCC_VERSION }} g++-${{ env.GCC_VERSION }} cmake"
+        cache-key: "apt-toolchain-gcc-${{ env.GCC_VERSION }}"
 
-    - name: Register and set GCC alternatives (Linux)
+    - name: Register GCC alternatives
       if: ${{ runner.os == 'Linux' && inputs.toolchain == 'gcc' }}
       shell: bash
       run: |
-        set -euo pipefail
         sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-${{ env.GCC_VERSION }} 140
         sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-${{ env.GCC_VERSION }} 140
         sudo update-alternatives --set gcc /usr/bin/gcc-${{ env.GCC_VERSION }}
         sudo update-alternatives --set g++ /usr/bin/g++-${{ env.GCC_VERSION }}
 
-    - name: Install toolchain (Linux clang-20)
+    - name: Install toolchain (Linux clang)
       if: ${{ runner.os == 'Linux' && inputs.toolchain == 'clang' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
-        packages: 'build-essential clang-${{ env.CLANG_VERSION }} clang++-${{ env.CLANG_VERSION }} cmake'
-        cache-key: 'toolchain-clang-${{ env.CLANG_VERSION }}'
+        packages: "build-essential clang-${{ env.CLANG_VERSION }} clang++-${{ env.CLANG_VERSION }} cmake"
+        cache-key: "apt-toolchain-clang-${{ env.CLANG_VERSION }}"
 
-    - name: Install toolchain (Linux clang-20 with libc++)
+    - name: Install toolchain (Linux clang-libc++)
       if: ${{ runner.os == 'Linux' && inputs.toolchain == 'clang-libc++' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
-        packages: 'build-essential clang-${{ env.CLANG_VERSION }} clang++-${{ env.CLANG_VERSION }} libc++-${{ env.CLANG_VERSION }}-dev libc++abi-${{ env.CLANG_VERSION }}-dev clang-format-${{ env.CLANG_VERSION }} clang-tidy-${{ env.CLANG_VERSION }} cmake'
-        cache-key: 'toolchain-clang-libc++-${{ env.CLANG_VERSION }}'
+        packages: "build-essential clang-${{ env.CLANG_VERSION }} clang++-${{ env.CLANG_VERSION }} libc++-${{ env.CLANG_VERSION }}-dev libc++abi-${{ env.CLANG_VERSION }}-dev clang-format-${{ env.CLANG_VERSION }} clang-tidy-${{ env.CLANG_VERSION }} cmake"
+        cache-key: "apt-toolchain-clang-libc++-${{ env.CLANG_VERSION }}"
 
-    - name: Register and set Clang alternatives (Linux)
+    - name: Register Clang alternatives
       if: ${{ runner.os == 'Linux' && (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++') }}
       shell: bash
       run: |
-        set -euo pipefail
         sudo update-alternatives --remove-all clang || true
         sudo update-alternatives --remove-all clang++ || true
-        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${{ env.CLANG_VERSION }} 200 --slave /usr/bin/clang++ clang++ /usr/bin/clang++-${{ env.CLANG_VERSION }} || true
+        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${{ env.CLANG_VERSION }} 200 --slave /usr/bin/clang++ clang++ /usr/bin/clang++-${{ env.CLANG_VERSION }}
 
+    ###########################################################################
+    # 4. CCACHE (LINUX)
+    ###########################################################################
     - name: Install ccache (Linux)
       if: ${{ runner.os == 'Linux' && inputs.ccache-key != '' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
-        packages: 'ccache'
-        cache-key: 'ccache-linux-v1'
+        packages: "ccache"
+        cache-key: "apt-ccache-linux-v1"
 
-    - name: Ensure ccache symlinks are first in PATH (Linux)
+    - name: Ensure ccache symlinks are first in PATH
       if: ${{ runner.os == 'Linux' && inputs.ccache-key != '' }}
       shell: bash
       run: |
-        CCACHE_BIN=""
         if [ -d /usr/lib/ccache ]; then
-          CCACHE_BIN=/usr/lib/ccache
+          echo "PATH=/usr/lib/ccache:$PATH" >> "$GITHUB_ENV"
         elif [ -d /usr/lib64/ccache ]; then
-          CCACHE_BIN=/usr/lib64/ccache
-        fi
-        if [ -n "$CCACHE_BIN" ]; then
-          echo "PATH=$CCACHE_BIN:$PATH" >> "$GITHUB_ENV"
+          echo "PATH=/usr/lib64/ccache:$PATH" >> "$GITHUB_ENV"
         fi
 
-    - name: Configure ccache (Linux)
+    - name: Configure ccache
       if: ${{ runner.os == 'Linux' && inputs.ccache-key != '' }}
       shell: bash
       run: |
-        # Use runtime $HOME so composite action doesn't rely on unavailable expression contexts
-        echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
         echo "CCACHE_MAXSIZE=2G" >> "$GITHUB_ENV"
-        mkdir -p "$HOME/.ccache"
         ccache -M 2G || true
 
-    - name: Determine toolchain cache version (Linux)
+    - name: Determine toolchain cache version
       if: ${{ runner.os == 'Linux' }}
       shell: bash
       run: |
@@ -185,64 +189,15 @@ runs:
           echo "TOOLCHAIN_VERSION=default" >> "$GITHUB_ENV"
         fi
 
-    - name: Install clcache (Windows MSVC)
-      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' && inputs.ccache-key != '' }}
-      shell: pwsh
-      run: |
-        # Install clcache for MSVC via pip (user install)
-        pip install --user clcache
-        # Determine user Scripts path (where pip places executables) and add it to PATH
-        try {
-          $userBase = python -c "import site; print(site.USER_BASE)"
-        } catch {
-          $userBase = $null
-        }
-        if ($userBase) {
-          $scripts = Join-Path $userBase 'Scripts'
-        } else {
-          $scripts = $null
-          $appRoaming = Join-Path $env:USERPROFILE 'AppData\Roaming\Python'
-          if (Test-Path $appRoaming) {
-            $found = Get-ChildItem -Path $appRoaming -Directory -Recurse -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName 'Scripts') } | Select-Object -First 1
-            if ($found) { $scripts = Join-Path $found.FullName 'Scripts' }
-          }
-        }
-        if ($scripts -and (Test-Path $scripts)) {
-          Write-Host "Adding user Scripts path to PATH: $scripts"
-          Add-Content -Path $Env:GITHUB_PATH -Value $scripts
-          $env:PATH = "$scripts;$env:PATH"
-        } else {
-          Write-Host "Warning: could not determine user Scripts path for clcache; clcache may not be available." -ForegroundColor Yellow
-        }
-
-    - name: Configure clcache (Windows MSVC)
-      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' && inputs.ccache-key != '' }}
-      shell: pwsh
-      run: |
-        # Set a predictable cache directory for clcache and ensure it exists
-        $cldir = Join-Path $env:USERPROFILE '.clcache'
-        Add-Content -Path $Env:GITHUB_ENV -Value "CL_CACHE_DIR=$cldir"
-        if (-not (Test-Path $cldir)) { New-Item -ItemType Directory -Path $cldir | Out-Null }
-
-    - name: Set static clcache key (Windows)
-      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' && inputs.ccache-key != '' }}
-      shell: pwsh
-      run: |
-        # Use a static key for clcache; user can change this value in the workflow later if desired
-        Add-Content -Path $Env:GITHUB_ENV -Value "CLCACHE_KEY=msvc-v1"
-
-    - name: Compute ccache full key (Linux)
+    - name: Compute ccache full key
       if: ${{ runner.os == 'Linux' && inputs.ccache-key != '' }}
       shell: bash
       run: |
-        set -euo pipefail
         USER_SUFFIX="${{ inputs.ccache-key }}"
-        # sanitize: replace spaces and slashes with '-' and remove problematic chars
         SANITIZED=$(echo "$USER_SUFFIX" | tr ' /' '-' | sed 's/[^A-Za-z0-9._+-]/-/g')
-        FULL_KEY="${{ inputs.toolchain }}-${TOOLCHAIN_VERSION}-${SANITIZED}"
-        echo "CCACHE_FULL_KEY=$FULL_KEY" >> "$GITHUB_ENV"
+        echo "CCACHE_FULL_KEY=ccache-${{ inputs.toolchain }}-${TOOLCHAIN_VERSION}-${SANITIZED}" >> "$GITHUB_ENV"
 
-    - name: Restore ccache (Linux)
+    - name: Restore ccache
       if: ${{ runner.os == 'Linux' && inputs.ccache-key != '' }}
       id: restore-ccache
       uses: actions/cache@v4
@@ -250,59 +205,56 @@ runs:
         path: ${{ env.CCACHE_DIR }}
         key: ${{ env.CCACHE_FULL_KEY }}
 
-    - name: Restore clcache (Windows)
+    ###########################################################################
+    # 5. CLCACHE (WINDOWS)
+    ###########################################################################
+    - name: Install clcache (Windows)
+      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' && inputs.ccache-key != '' }}
+      shell: pwsh
+      run: |
+        pip install --user clcache
+
+    - name: Configure clcache (Windows)
+      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' && inputs.ccache-key != '' }}
+      shell: pwsh
+      run: |
+        $cldir = Join-Path $env:USERPROFILE '.clcache'
+        Add-Content -Path $Env:GITHUB_ENV -Value "CL_CACHE_DIR=$cldir"
+        if (-not (Test-Path $cldir)) { New-Item -ItemType Directory -Path $cldir | Out-Null }
+
+    - name: Set static clcache key
+      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' && inputs.ccache-key != '' }}
+      shell: pwsh
+      run: |
+        Add-Content -Path $Env:GITHUB_ENV -Value "CLCACHE_KEY=msvc-v1"
+
+    - name: Restore clcache
       if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' && inputs.ccache-key != '' }}
       id: restore-clcache
       uses: actions/cache@v4
       with:
         path: ${{ env.CL_CACHE_DIR }}
         key: ${{ env.CLCACHE_KEY }}
-        restore-keys: ${{ runner.os }}-msvc-
 
+    ###########################################################################
+    # 6. WINDOWS TOOLCHAIN
+    ###########################################################################
     - name: Install toolchain (Windows MSVC)
       if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' }}
       uses: ilammy/msvc-dev-cmd@v1
       with:
         arch: 'x64'
 
-    - name: Install toolchain extras (Windows MSVC)
-      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' }}
+    - name: Install extras (Windows)
+      if: ${{ runner.os == 'Windows' }}
       shell: pwsh
       run: |
-        # Determine the user Scripts folder using site.USER_BASE; fallback to searching AppData
-        try {
-          $userBase = python -c "import site, sys; print(site.USER_BASE)"
-        } catch {
-          $userBase = $null
-        }
-        if ($userBase) {
-          $scripts = Join-Path $userBase 'Scripts'
-        } else {
-          $scripts = $null
-          $appRoaming = Join-Path $env:USERPROFILE 'AppData\Roaming\Python'
-          if (Test-Path $appRoaming) {
-            $found = Get-ChildItem -Path $appRoaming -Directory -Recurse -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName 'Scripts') } | Select-Object -First 1
-            if ($found) { $scripts = Join-Path $found.FullName 'Scripts' }
-          }
-        }
-        if ($scripts -and (Test-Path $scripts)) {
-          Write-Host "Adding user Scripts path to PATH: $scripts"
-          Add-Content -Path $Env:GITHUB_PATH -Value $scripts
-          $env:PATH = "$scripts;$env:PATH"
-        } else {
-          # Fallback: add known runner path where pip often installs scripts
-          $hard = 'C:\Users\runneradmin\AppData\Roaming\Python\Python39\Scripts'
-          if (Test-Path $hard) {
-            Write-Host "Adding hardcoded Scripts path to PATH: $hard"
-            Add-Content -Path $Env:GITHUB_PATH -Value $hard
-            $env:PATH = "$hard;$env:PATH"
-          } else {
-            Write-Host "Warning: could not determine user Scripts path; pip reported its location in its output." -ForegroundColor Yellow
-          }
-        }
-        meson --version
+        choco install winflexbison nasm -y
 
-    - name: Export CC/CXX to job environment
+    ###########################################################################
+    # 7. EXPORT COMPILERS
+    ###########################################################################
+    - name: Export CC/CXX
       shell: bash
       run: |
         if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
@@ -316,26 +268,26 @@ runs:
           echo "CXX=cl" >> "$GITHUB_ENV"
         fi
 
+    ###########################################################################
+    # 8. DOC TOOLS & EXTRAS
+    ###########################################################################
     - name: Install documentation tools (Linux)
       if: ${{ runner.os == 'Linux' && inputs.docs == 'true' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
-        packages: 'doxygen doxygen-doc graphviz python3-sphinx python3-sphinx-rtd-theme'
-        cache-key: 'doc-tools-linux-v1'
+        packages: "doxygen doxygen-doc graphviz python3-sphinx python3-sphinx-rtd-theme"
+        cache-key: "apt-doc-tools-linux-v1"
 
     - name: Install extras (Linux)
       if: ${{ runner.os == 'Linux' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
-        packages: 'bison flex sed nasm yasm git'
-        cache-key: 'toolchain-extras-linux-v1'
+        packages: "bison flex sed nasm yasm git"
+        cache-key: "apt-toolchain-extras-linux-v1"
 
-    - name: Install extras (Windows)
-      if: ${{ runner.os == 'Windows' }}
-      shell: pwsh
-      run: |
-        choco install winflexbison nasm -y
-
+    ###########################################################################
+    # 9. OUTPUTS
+    ###########################################################################
     - name: Set outputs
       id: set-outputs
       shell: bash
@@ -351,32 +303,29 @@ runs:
           echo "cxx_compiler=cl" >> "$GITHUB_OUTPUT"
         fi
 
-    - name: Randomized delay before saving ccache (Linux)
+    ###########################################################################
+    # 10. SAVE CCACHE / CLCACHE
+    ###########################################################################
+    - name: Randomized delay before saving ccache
       if: ${{ success() && env.CCACHE_FULL_KEY != '' && steps.restore-ccache.outputs.cache-hit != 'true' && runner.os == 'Linux' }}
       shell: bash
       run: |
-        set -euo pipefail
-        SLEEP=$(( (RANDOM % 15) + 1 ))
-        echo "Sleeping ${SLEEP}s to stagger cache saves"
-        sleep $SLEEP
+        sleep $(( (RANDOM % 15) + 1 ))
 
-    - name: Save updated ccache (only on success and on cache-miss)
+    - name: Save updated ccache
       if: ${{ success() && env.CCACHE_FULL_KEY != '' && steps.restore-ccache.outputs.cache-hit != 'true' }}
       uses: actions/cache@v4
       with:
         path: ${{ env.CCACHE_DIR }}
         key: ${{ env.CCACHE_FULL_KEY }}
 
-    - name: Randomized delay before saving clcache (Windows)
+    - name: Randomized delay before saving clcache
       if: ${{ success() && env.CLCACHE_KEY != '' && steps.restore-clcache.outputs.cache-hit != 'true' && runner.os == 'Windows' }}
       shell: pwsh
       run: |
-        $rand = Get-Random -Maximum 15
-        $sleep = $rand + 1
-        Write-Host "Sleeping ${sleep}s to stagger cache saves"
-        Start-Sleep -Seconds $sleep
+        Start-Sleep -Seconds (Get-Random -Maximum 15)
 
-    - name: Save clcache (Windows, only on success and on cache-miss)
+    - name: Save clcache
       if: ${{ success() && env.CLCACHE_KEY != '' && steps.restore-clcache.outputs.cache-hit != 'true' }}
       uses: actions/cache@v4
       with:

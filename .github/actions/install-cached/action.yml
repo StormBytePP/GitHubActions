@@ -1,33 +1,97 @@
 name: Cache and Install APT Packages
-description: Caches APT packages to speed up subsequent installations in GitHub Actions workflows.
+description: Caches APT packages deterministically to avoid collisions.
 author: David C. Manuelda
-email: StormByte@gmail.com
 branding:
   icon: 'hard-drive'
   color: 'green'
 
 inputs:
   packages:
-    description: 'A space-separated list of APT packages to install and cache.'
+    description: "Space-separated list of APT packages to install."
     required: true
-    default: ''
   cache-key:
-    description: 'A unique key to identify the cache. Change this key to invalidate the cache.'
+    description: "Prefix for the cache key. If empty, caching is disabled."
     required: false
-    default: 'apt-packages-cache'
+    default: ""
 
 runs:
   using: "composite"
   steps:
-    - name: Install and Cache APT packages
-      if: runner.os == 'Linux'
-      uses: awalsh128/cache-apt-pkgs-action@v1
-      with:
-        packages: ${{ inputs.packages }}
-        version: ${{ inputs.cache-key }}
 
-    - name: Install Chocolatey packages
-      if: runner.os == 'Windows'
-      shell: pwsh
+    ###########################################################################
+    # 0. COMPUTE DETERMINISTIC CACHE KEY (HASH ONLY)
+    ###########################################################################
+    - name: Compute APT cache key
+      if: ${{ inputs.cache-key != '' }}
+      id: aptkey
+      shell: bash
       run: |
-        choco install ${{ inputs.packages }} -y
+        echo "[STEP 0] Computing deterministic cache key..."
+        HASH=$(echo '${{ inputs.packages }}' | sha256sum | cut -c1-16)
+        echo "PACKAGES_HASH=$HASH" >> "$GITHUB_ENV"
+
+    ###########################################################################
+    # 1. CREATE UNIQUE CACHE DIRECTORY
+    ###########################################################################
+    - name: Create unique APT cache directory
+      if: ${{ inputs.cache-key != '' }}
+      shell: bash
+      run: |
+        CACHE_DIR="$HOME/apt-cache-${{ inputs.cache-key }}-${PACKAGES_HASH}"
+        echo "CACHE_DIR=$CACHE_DIR" >> "$GITHUB_ENV"
+
+        echo "[STEP 1] Creating cache directory: $CACHE_DIR"
+        mkdir -p "$CACHE_DIR"
+
+    ###########################################################################
+    # 2. RESTORE CACHE INTO UNIQUE DIRECTORY
+    ###########################################################################
+    - name: Restore APT cache
+      if: ${{ inputs.cache-key != '' }}
+      id: restore
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.CACHE_DIR }}
+        key: ${{ inputs.cache-key }}-${{ env.PACKAGES_HASH }}
+
+    ###########################################################################
+    # 3. COPY RESTORED CACHE BACK INTO SYSTEM APT CACHE
+    ###########################################################################
+    - name: Restore cached .deb files into system APT cache
+      shell: bash
+      run: |
+        echo "[STEP 3] Copying restored .deb files into /var/cache/apt/archives..."
+        sudo mkdir -p /var/cache/apt/archives
+        sudo cp "${CACHE_DIR}"/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+
+    ###########################################################################
+    # 4. DOWNLOAD PACKAGES AND DEPENDENCIES (NO INSTALL)
+    ###########################################################################
+    - name: Download APT packages (dependencies included)
+      shell: bash
+      run: |
+        echo "[STEP 4] Downloading packages and dependencies (no install)..."
+        sudo apt-get update
+        sudo apt-get install --download-only -y ${{ inputs.packages }}
+
+        echo "[STEP 4] Copying newly downloaded .deb files into cache directory..."
+        cp /var/cache/apt/archives/*.deb "${CACHE_DIR}/" 2>/dev/null || true
+
+    ###########################################################################
+    # 5. INSTALL PACKAGES USING LOCAL .deb FILES
+    ###########################################################################
+    - name: Install APT packages
+      shell: bash
+      run: |
+        echo "[STEP 5] Installing packages using local .deb files..."
+        sudo apt-get install -y ${{ inputs.packages }}
+
+    ###########################################################################
+    # 6. SAVE CACHE (ONLY IF NOT RESTORED)
+    ###########################################################################
+    - name: Save APT cache
+      if: ${{ inputs.cache-key != '' && steps.restore.outputs.cache-hit != 'true' }}
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.CACHE_DIR }}
+        key: ${{ inputs.cache-key }}-${{ env.PACKAGES_HASH }}

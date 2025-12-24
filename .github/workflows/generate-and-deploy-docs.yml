@@ -1,47 +1,77 @@
 name: Generate and Deploy Docs
 
+###############################################################################
+# 1. WORKFLOW INPUTS (FOR workflow_call)
+###############################################################################
 on:
   workflow_call:
     inputs:
       doc_target:
         required: true
         type: string
+
       extra-cmake-options:
         required: false
         type: string
         default: ""
+
       extra-install:
         required: false
         type: string
         default: ""
+
       docs_source_dir:
         required: false
         type: string
         default: "./docs"
 
+###############################################################################
+# 2. CONCURRENCY CONTROL (PREVENT PARALLEL DEPLOYS)
+###############################################################################
 concurrency:
   group: "pages"
   cancel-in-progress: false
 
+###############################################################################
+# 3. JOB: GENERATE DOCUMENTATION
+###############################################################################
 jobs:
   generate-docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
 
-      - uses: stormbytepp/githubactions/.github/actions/generate-doc@master
+      #########################################################################
+      # 3.1 CHECKOUT REPOSITORY
+      #########################################################################
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      #########################################################################
+      # 3.2 GENERATE DOCUMENTATION USING REUSABLE ACTION
+      #########################################################################
+      - name: Generate documentation
+        uses: stormbytepp/githubactions/.github/actions/generate-doc@master
         with:
           doc_target: ${{ inputs.doc_target }}
           extra-cmake-options: ${{ inputs.extra-cmake-options }}
           extra-install: ${{ inputs.extra-install }}
           docs_source_dir: ${{ inputs.docs_source_dir }}
 
+  #############################################################################
+  # 4. JOB: DEPLOY TO GITHUB PAGES
+  #############################################################################
   deploy:
     runs-on: ubuntu-latest
     needs: generate-docs
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
-      - id: deployment
+      #########################################################################
+      # 4.1 DEPLOY GENERATED SITE
+      #########################################################################
+      - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4

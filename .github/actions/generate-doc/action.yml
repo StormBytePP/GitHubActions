@@ -8,47 +8,60 @@ branding:
 
 inputs:
   doc_target:
-    description: 'CMake target to build documentation'
+    description: "CMake target to build documentation"
     required: true
     type: string
+
   docs_source_dir:
-    description: 'Directory containing generated documentation (relative to workspace)'
+    description: "Directory containing generated documentation (relative to workspace)"
     required: false
     type: string
-    default: './docs'
+    default: "./docs"
+
   extra-cmake-options:
-    description: 'Additional CMake configuration options'
+    description: "Additional CMake configuration options"
     required: false
     type: string
-    default: ''
+    default: ""
+
   extra-install:
-    description: 'Space-separated list of extra apt packages to install on the runner'
+    description: "Space-separated list of extra apt packages to install on the runner"
     required: false
     type: string
-    default: ''
+    default: ""
 
 runs:
   using: composite
   steps:
+
+    ###########################################################################
+    # 1. CHECKOUT REPOSITORY
+    ###########################################################################
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
         submodules: true
 
+    ###########################################################################
+    # 2. INSTALL TOOLCHAIN + DOC TOOLS
+    ###########################################################################
     - name: Install toolchain
       uses: stormbytepp/githubactions/.github/actions/install-toolchain@master
       with:
         toolchain: clang
         docs: true
 
-    - name: Prepare cache key
+    ###########################################################################
+    # 3. OPTIONAL EXTRA APT PACKAGES (CACHED)
+    ###########################################################################
+    - name: Prepare cache key for extra packages
       if: ${{ inputs.extra-install != '' }}
       id: cachekey
       shell: bash
       run: |
         san=$(printf '%s' "${{ inputs.extra-install }}" | tr -d ' ')
-        echo "cache_key=extra-apt-packages-${san}" >> $GITHUB_OUTPUT
+        echo "cache_key=extra-apt-packages-${san}" >> "$GITHUB_OUTPUT"
 
     - name: Install extra apt packages
       if: ${{ inputs.extra-install != '' }}
@@ -57,6 +70,9 @@ runs:
         packages: ${{ inputs.extra-install }}
         cache-key: ${{ steps.cachekey.outputs.cache_key }}
 
+    ###########################################################################
+    # 4. BUILD DOCUMENTATION WITH CMAKE
+    ###########################################################################
     - name: Build with CMake
       uses: ashutoshvarma/action-cmake-build@master
       with:
@@ -69,11 +85,17 @@ runs:
         build-type: Release
         target: ${{ inputs.doc_target }}
 
+    ###########################################################################
+    # 5. BUILD STATIC SITE WITH JEKYLL
+    ###########################################################################
     - name: Build with Jekyll
       uses: actions/jekyll-build-pages@v1
       with:
         source: ${{ inputs.docs_source_dir }}
         destination: ./_site
 
+    ###########################################################################
+    # 6. UPLOAD ARTIFACT FOR GITHUB PAGES
+    ###########################################################################
     - name: Upload Pages artifact
       uses: actions/upload-pages-artifact@v3
