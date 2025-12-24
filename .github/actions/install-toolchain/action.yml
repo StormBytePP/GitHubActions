@@ -244,14 +244,15 @@ runs:
 
     - name: Restore ccache (Linux)
       if: ${{ runner.os == 'Linux' && inputs.ccache-key != '' }}
+      id: restore-ccache
       uses: actions/cache@v4
       with:
-        path: ~/.ccache
+        path: ${{ env.CCACHE_DIR }}
         key: ${{ env.CCACHE_FULL_KEY }}
-        restore-keys: ${{ inputs.toolchain }}-${{ env.TOOLCHAIN_VERSION }}-
 
     - name: Restore clcache (Windows)
       if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' && inputs.ccache-key != '' }}
+      id: restore-clcache
       uses: actions/cache@v4
       with:
         path: ${{ env.CL_CACHE_DIR }}
@@ -350,15 +351,15 @@ runs:
           echo "cxx_compiler=cl" >> "$GITHUB_OUTPUT"
         fi
 
-    - name: Save updated ccache (only on success)
-      if: ${{ success() && env.CCACHE_FULL_KEY != '' }}
+    - name: Save updated ccache (only on success and on cache-miss)
+      if: ${{ success() && env.CCACHE_FULL_KEY != '' && steps.restore-ccache.outputs.cache-hit != 'true' }}
       uses: actions/cache@v4
       with:
-        path: ~/.ccache
+        path: ${{ env.CCACHE_DIR }}
         key: ${{ env.CCACHE_FULL_KEY }}
 
-    - name: Save clcache (Windows, only on success)
-      if: ${{ success() && env.CLCACHE_KEY != '' }}
+    - name: Save clcache (Windows, only on success and on cache-miss)
+      if: ${{ success() && env.CLCACHE_KEY != '' && steps.restore-clcache.outputs.cache-hit != 'true' }}
       uses: actions/cache@v4
       with:
         path: ${{ env.CL_CACHE_DIR }}
