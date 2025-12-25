@@ -9,42 +9,58 @@ inputs:
   packages:
     description: "Space-separated list of APT packages to install."
     required: true
+
   cache-key:
     description: "Prefix for the cache key. If empty, caching is disabled."
     required: false
     default: ""
+
+  unique:
+    description: >
+      If true (default), the cache-key is assumed to be globally unique and
+      no hash suffix will be added. If false, a deterministic hash based on
+      the package list will be appended to avoid collisions.
+    required: false
+    default: "true"
 
 runs:
   using: "composite"
   steps:
 
     ###########################################################################
-    # 0. COMPUTE DETERMINISTIC CACHE KEY (HASH ONLY)
+    # 0. COMPUTE DETERMINISTIC HASH (ONLY IF unique == false)
     ###########################################################################
-    - name: Compute APT cache key
-      if: ${{ inputs.cache-key != '' }}
+    - name: Compute APT cache key hash
+      if: ${{ inputs.cache-key != '' && inputs.unique == 'false' }}
       id: aptkey
       shell: bash
       run: |
-        echo "[STEP 0] Computing deterministic cache key..."
+        echo "[STEP 0] Computing deterministic cache key hash..."
         HASH=$(echo '${{ inputs.packages }}' | sha256sum | cut -c1-16)
         echo "PACKAGES_HASH=$HASH" >> "$GITHUB_ENV"
 
     ###########################################################################
-    # 1. CREATE UNIQUE CACHE DIRECTORY
+    # 1. CREATE CACHE DIRECTORY (UNIQUE OR HASHED)
     ###########################################################################
-    - name: Create unique APT cache directory
+    - name: Create APT cache directory
       if: ${{ inputs.cache-key != '' }}
       shell: bash
       run: |
-        CACHE_DIR="$HOME/apt-cache-${{ inputs.cache-key }}-${PACKAGES_HASH}"
-        echo "CACHE_DIR=$CACHE_DIR" >> "$GITHUB_ENV"
+        if [ "${{ inputs.unique }}" = "true" ]; then
+          # Unique mode: user guarantees the key is globally unique
+          CACHE_DIR="$HOME/apt-cache-${{ inputs.cache-key }}"
+          echo "[STEP 1] Creating cache directory (unique mode): $CACHE_DIR"
+        else
+          # Deterministic mode: append hash suffix
+          CACHE_DIR="$HOME/apt-cache-${{ inputs.cache-key }}-${PACKAGES_HASH}"
+          echo "[STEP 1] Creating cache directory (hashed mode): $CACHE_DIR"
+        fi
 
-        echo "[STEP 1] Creating cache directory: $CACHE_DIR"
+        echo "CACHE_DIR=$CACHE_DIR" >> "$GITHUB_ENV"
         mkdir -p "$CACHE_DIR"
 
     ###########################################################################
-    # 2. RESTORE CACHE INTO UNIQUE DIRECTORY
+    # 2. RESTORE CACHE
     ###########################################################################
     - name: Restore APT cache
       if: ${{ inputs.cache-key != '' }}
@@ -52,7 +68,9 @@ runs:
       uses: actions/cache@v4
       with:
         path: ${{ env.CACHE_DIR }}
-        key: ${{ inputs.cache-key }}-${{ env.PACKAGES_HASH }}
+        key: ${{ inputs.unique == 'true'
+                && inputs.cache-key
+                || format('{0}-{1}', inputs.cache-key, env.PACKAGES_HASH) }}
 
     ###########################################################################
     # 3. COPY RESTORED CACHE BACK INTO SYSTEM APT CACHE
@@ -94,4 +112,6 @@ runs:
       uses: actions/cache@v4
       with:
         path: ${{ env.CACHE_DIR }}
-        key: ${{ inputs.cache-key }}-${{ env.PACKAGES_HASH }}
+        key: ${{ inputs.unique == 'true'
+                && inputs.cache-key
+                || format('{0}-{1}', inputs.cache-key, env.PACKAGES_HASH) }}
