@@ -225,46 +225,90 @@ runs:
         key: ${{ env.CCACHE_FULL_KEY }}
 
     ###########################################################################
-    # 4. CLCACHE (WINDOWS)
+    # 4. BUILDCACHE (WINDOWS) — INSTALACIÓN MANUAL + WRAPPER cl.bat
     ###########################################################################
-    - name: Install clcache (Windows)
+    - name: Install BuildCache manually (Windows)
       if: ${{ runner.os == 'Windows' && inputs.ccache-key != '' }}
       shell: pwsh
       run: |
-        pip install clcache==4.1.0
-        clcache --version
+        $version = "0.31.5"
+        $zipUrl = "https://gitlab.com/bits-n-bites/buildcache/-/releases/v$version/downloads/buildcache-windows.zip"
+        $zipPath = "$env:RUNNER_TEMP\buildcache.zip"
+        $extractDir = "$env:RUNNER_TEMP\buildcache"
 
-    - name: Configure clcache directory
+        Write-Host "Downloading BuildCache from $zipUrl"
+        Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+
+        Write-Host "Extracting BuildCache to $extractDir"
+        Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+
+        # Ruta real del ejecutable
+        $bcExe = Join-Path $extractDir "buildcache\bin\buildcache.exe"
+
+        if (!(Test-Path $bcExe)) {
+          Write-Error "BuildCache executable not found at $bcExe"
+          exit 1
+        }
+
+        # Añadir al PATH
+        $bcBin = Split-Path $bcExe
+        "PATH=$bcBin;$env:PATH" >> $env:GITHUB_ENV
+
+        # Verificar instalación
+        & $bcExe --version
+
+    - name: Configure BuildCache directory
       if: ${{ runner.os == 'Windows' && inputs.ccache-key != '' }}
       shell: pwsh
       run: |
-        $dir = "$env:LOCALAPPDATA\clcache"
+        $dir = "$env:LOCALAPPDATA\buildcache"
         if (!(Test-Path $dir)) {
           New-Item -ItemType Directory -Path $dir | Out-Null
         }
-        "CLCACHE_DIR=$dir" >> $env:GITHUB_ENV
+        "BUILDCACHE_DIR=$dir" >> $env:GITHUB_ENV
 
-    - name: Configure clcache max size
+    - name: Configure BuildCache max size
       if: ${{ runner.os == 'Windows' && inputs.ccache-key != '' }}
       shell: pwsh
       run: |
-        clcache -M 2000
+        $conf = "$env:LOCALAPPDATA\buildcache\buildcache.conf"
 
-    - name: Create clcache compiler wrapper for Ninja
+        if (!(Test-Path $conf)) {
+          New-Item -ItemType File -Path $conf | Out-Null
+        }
+
+        $content = Get-Content $conf -Raw
+
+        if ($content -notmatch "max_cache_size") {
+          Add-Content $conf "`nmax_cache_size = 2000`n"
+        } else {
+          $content = $content -replace "max_cache_size\s*=\s*\d+", "max_cache_size = 2000"
+          Set-Content $conf $content
+        }
+
+        Write-Host "BuildCache max size set to 2000 MB"
+
+    - name: Create BuildCache cl.exe wrapper for Ninja/MSVC
       if: ${{ runner.os == 'Windows' && inputs.ccache-key != '' }}
       shell: pwsh
       run: |
-        # Ruta real a cl.exe
+        # Ruta real al compilador MSVC
         $realCl = "$env:VCToolsInstallDir\bin\Hostx64\x64\cl.exe"
-        "CLCACHE_CL=$realCl" >> $env:GITHUB_ENV
+
+        # Ruta al buildcache.exe
+        $bcExe = "$env:RUNNER_TEMP\buildcache\buildcache\bin\buildcache.exe"
 
         # Crear wrapper cl.bat
-        $wrapperDir = "$env:RUNNER_TEMP\clcache-wrapper"
+        $wrapperDir = "$env:RUNNER_TEMP\buildcache-wrapper"
         New-Item -ItemType Directory -Path $wrapperDir -Force | Out-Null
 
         $wrapper = @"
         @echo off
-        clcache %*
+        setlocal
+        set REAL_CL=$realCl
+        set BUILDCACHE_IMPERSONATE=%REAL_CL%
+        "$bcExe" "%REAL_CL%" %*
+        endlocal
         "@
 
         Set-Content -Path "$wrapperDir\cl.bat" -Value $wrapper -Encoding ASCII
@@ -278,22 +322,21 @@ runs:
       run: |
         "TOOLCHAIN_VERSION=msvc" >> $env:GITHUB_ENV
 
-    - name: Compute clcache full key
+    - name: Compute BuildCache full key
       if: ${{ runner.os == 'Windows' && inputs.ccache-key != '' }}
       shell: pwsh
       run: |
         $suffix = "${{ inputs.ccache-key }}"
         $sanitized = $suffix -replace '[^A-Za-z0-9._+-]', '-'
-        "CLCACHE_FULL_KEY=clcache-msvc-$sanitized" >> $env:GITHUB_ENV
+        "BUILDCACHE_FULL_KEY=buildcache-msvc-$sanitized" >> $env:GITHUB_ENV
 
-    - name: Restore clcache
+    - name: Restore BuildCache
       if: ${{ runner.os == 'Windows' && inputs.ccache-key != '' }}
-      id: restore-clcache
+      id: restore-buildcache
       uses: actions/cache@v4
       with:
-        path: ${{ env.CLCACHE_DIR }}
-        key: ${{ env.CLCACHE_FULL_KEY }}
-
+        path: ${{ env.BUILDCACHE_DIR }}
+        key: ${{ env.BUILDCACHE_FULL_KEY }}
 
     ###########################################################################
     # 5. DOXYGEN AND DEPENDENCIES
@@ -323,8 +366,8 @@ runs:
           $cxx = "clang++"
         }
         else {
-          $c  = "clcache"
-          $cxx = "clcache"
+          $c  = "cl"
+          $cxx = "cl"
         }
 
         "c_compiler=$c"     >> $env:GITHUB_OUTPUT
