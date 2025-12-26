@@ -96,7 +96,17 @@ runs:
     # 2. COMMON TOOLS
     ###########################################################################
     - name: Install Ninja
-      uses: ashutoshvarma/setup-ninja@master
+      if: ${{ runner.os == 'Linux' }}
+      uses: stormbytepp/githubactions/.github/actions/install-cached@master
+      with:
+        packages: "ninja-build"
+        cache-key: "apt-ninja-v1"
+
+    - name: Install Ninja
+      if: ${{ runner.os == 'Windows' }}
+      shell: pwsh
+      run: |
+        choco install ninja -y
 
     - name: Install Python and pip
       uses: actions/setup-python@v5
