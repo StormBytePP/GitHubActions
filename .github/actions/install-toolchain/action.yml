@@ -225,7 +225,17 @@ runs:
         key: ${{ env.CCACHE_FULL_KEY }}
 
     ###########################################################################
-    # 9. OUTPUTS
+    # 5. DOXYGEN AND DEPENDENCIES
+    ###########################################################################
+    - name: Install Doxygen and dependencies (if requested)
+      if: ${{ inputs.docs == 'true' && runner.os == 'Linux' }}
+      uses: stormbytepp/githubactions/.github/actions/install-cached@master
+      with:
+        packages: "doxygen graphviz"
+        cache-key: "apt-doxygen-and-optional-v1"
+
+    ###########################################################################
+    # 6. OUTPUTS
     ###########################################################################
     - name: Set outputs and environment variables
       id: set-outputs
@@ -252,7 +262,7 @@ runs:
         "CXX=$cxx"          >> $env:GITHUB_ENV
 
     ###########################################################################
-    # 10. SAVE CCACHE / CLCACHE
+    # 7. SAVE CCACHE / CLCACHE
     ###########################################################################
     - name: Randomized delay before saving ccache
       if: ${{ success() && env.CCACHE_FULL_KEY != '' && runner.os == 'Linux' }}
