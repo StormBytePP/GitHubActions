@@ -161,6 +161,15 @@ runs:
         sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${{ env.CLANG_VERSION }} 200 --slave /usr/bin/clang++ clang++ /usr/bin/clang++-${{ env.CLANG_VERSION }}
 
     ###########################################################################
+    # 3. TOOLCHAIN INSTALLATION (WINDOWS)
+    ###########################################################################
+    - name: Setup MSVC environment
+      if: ${{ runner.os == 'Windows' }}
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
+    ###########################################################################
     # 4. CCACHE (LINUX)
     ###########################################################################
     - name: Install ccache (Linux)
@@ -222,12 +231,13 @@ runs:
       id: set-outputs
       shell: pwsh
       run: |
-        # Determinar compiladores según el toolchain
-        if ($env:INPUT_TOOLCHAIN -eq "gcc") {
+        $toolchain = "${{ inputs.toolchain }}"
+
+        if ($toolchain -eq "gcc") {
           $c  = "gcc"
           $cxx = "g++"
         }
-        elseif ($env:INPUT_TOOLCHAIN -eq "clang" -or $env:INPUT_TOOLCHAIN -eq "clang-libc++") {
+        elseif ($toolchain -eq "clang" -or $toolchain -eq "clang-libc++") {
           $c  = "clang"
           $cxx = "clang++"
         }
@@ -236,13 +246,10 @@ runs:
           $cxx = "cl"
         }
 
-        # Exportar outputs
-        "c_compiler=$c"   >> $env:GITHUB_OUTPUT
+        "c_compiler=$c"     >> $env:GITHUB_OUTPUT
         "cxx_compiler=$cxx" >> $env:GITHUB_OUTPUT
-
-        # Exportar variables de entorno
-        "CC=$c"   >> $env:GITHUB_ENV
-        "CXX=$cxx" >> $env:GITHUB_ENV
+        "CC=$c"             >> $env:GITHUB_ENV
+        "CXX=$cxx"          >> $env:GITHUB_ENV
 
     ###########################################################################
     # 10. SAVE CCACHE / CLCACHE
