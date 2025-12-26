@@ -206,86 +206,6 @@ runs:
         key: ${{ env.CCACHE_FULL_KEY }}
 
     ###########################################################################
-    # 5. CLCACHE (WINDOWS)
-    ###########################################################################
-    - name: Install clcache (Windows)
-      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' && inputs.ccache-key != '' }}
-      shell: pwsh
-      run: |
-        pip install --user clcache
-
-    - name: Configure clcache (Windows)
-      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' && inputs.ccache-key != '' }}
-      shell: pwsh
-      run: |
-        $cldir = Join-Path $env:USERPROFILE '.clcache'
-        Add-Content -Path $Env:GITHUB_ENV -Value "CL_CACHE_DIR=$cldir"
-        if (-not (Test-Path $cldir)) { New-Item -ItemType Directory -Path $cldir | Out-Null }
-
-    - name: Set static clcache key
-      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' && inputs.ccache-key != '' }}
-      shell: pwsh
-      run: |
-        Add-Content -Path $Env:GITHUB_ENV -Value "CLCACHE_KEY=msvc-v1"
-
-    - name: Restore clcache
-      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' && inputs.ccache-key != '' }}
-      id: restore-clcache
-      uses: actions/cache@v4
-      with:
-        path: ${{ env.CL_CACHE_DIR }}
-        key: ${{ env.CLCACHE_KEY }}
-
-    ###########################################################################
-    # 6. WINDOWS TOOLCHAIN
-    ###########################################################################
-    - name: Install toolchain (Windows MSVC)
-      if: ${{ runner.os == 'Windows' && inputs.toolchain == 'msvc' }}
-      uses: ilammy/msvc-dev-cmd@v1
-      with:
-        arch: 'x64'
-
-    - name: Install extras (Windows)
-      if: ${{ runner.os == 'Windows' }}
-      shell: pwsh
-      run: |
-        choco install winflexbison nasm -y
-
-    ###########################################################################
-    # 7. EXPORT COMPILERS
-    ###########################################################################
-    - name: Export CC/CXX
-      shell: bash
-      run: |
-        if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
-          echo "CC=gcc" >> "$GITHUB_ENV"
-          echo "CXX=g++" >> "$GITHUB_ENV"
-        elif [[ "${{ inputs.toolchain }}" == "clang" || "${{ inputs.toolchain }}" == "clang-libc++" ]]; then
-          echo "CC=clang" >> "$GITHUB_ENV"
-          echo "CXX=clang++" >> "$GITHUB_ENV"
-        else
-          echo "CC=cl" >> "$GITHUB_ENV"
-          echo "CXX=cl" >> "$GITHUB_ENV"
-        fi
-
-    ###########################################################################
-    # 8. DOC TOOLS & EXTRAS
-    ###########################################################################
-    - name: Install documentation tools (Linux)
-      if: ${{ runner.os == 'Linux' && inputs.docs == 'true' }}
-      uses: stormbytepp/githubactions/.github/actions/install-cached@master
-      with:
-        packages: "doxygen doxygen-doc graphviz python3-sphinx python3-sphinx-rtd-theme"
-        cache-key: "apt-doc-tools-linux-v1"
-
-    - name: Install extras (Linux)
-      if: ${{ runner.os == 'Linux' }}
-      uses: stormbytepp/githubactions/.github/actions/install-cached@master
-      with:
-        packages: "bison flex sed nasm yasm git"
-        cache-key: "apt-toolchain-extras-linux-v1"
-
-    ###########################################################################
     # 9. OUTPUTS
     ###########################################################################
     - name: Set outputs
@@ -307,27 +227,68 @@ runs:
     # 10. SAVE CCACHE / CLCACHE
     ###########################################################################
     - name: Randomized delay before saving ccache
-      if: ${{ success() && env.CCACHE_FULL_KEY != '' && steps.restore-ccache.outputs.cache-hit != 'true' && runner.os == 'Linux' }}
+      if: ${{ success() && env.CCACHE_FULL_KEY != '' && runner.os == 'Linux' }}
       shell: bash
       run: |
         sleep $(( (RANDOM % 15) + 1 ))
 
+    - name: Delete existing ccache entry (Linux)
+      if: ${{ success() && env.CCACHE_FULL_KEY != '' && runner.os == 'Linux' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ -z "${GITHUB_TOKEN:-}" ]; then
+          echo "❌ ERROR: GITHUB_TOKEN no está definido"
+          exit 1
+        fi
+
+        ENC_KEY=$(python3 -c "import urllib.parse, os; print(urllib.parse.quote(os.environ['CCACHE_FULL_KEY'], safe=''))")
+        REPO="${GITHUB_REPOSITORY}"
+        TOKEN="${GITHUB_TOKEN}"
+
+        echo "🔍 Consultando API de GitHub para borrar cache…"
+        HTTP_CODE=$(curl -s -o resp.json -w "%{http_code}" \
+          -H "Authorization: token $TOKEN" \
+          "https://api.github.com/repos/${REPO}/actions/caches?key=${ENC_KEY}")
+
+        echo "🔍 HTTP code: $HTTP_CODE"
+        echo "🔍 Respuesta cruda del servidor:"
+        cat resp.json || true
+        echo "----------------------------------------"
+
+        if [ "$HTTP_CODE" -ne 200 ]; then
+          echo "❌ ERROR: La API devolvió un código inesperado ($HTTP_CODE)"
+          exit 1
+        fi
+
+        if ! head -c 1 resp.json | grep -q '{'; then
+          echo "❌ ERROR: La respuesta NO es JSON válido"
+          exit 1
+        fi
+
+        cache_id=$(python3 -c "import json; data=json.load(open('resp.json')); caches=data.get('actions_caches', []); print(caches[0].get('id') if caches else '')")
+
+        if [ -z "$cache_id" ]; then
+          echo 'ℹ️ No se encontró ninguna entrada de cache para borrar'
+          exit 0
+        fi
+
+        echo "🗑️ Borrando cache id $cache_id"
+        DELETE_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+          -X DELETE -H "Authorization: token $TOKEN" \
+          "https://api.github.com/repos/${REPO}/actions/caches/${cache_id}")
+
+        if [ "$DELETE_CODE" -ne 204 ]; then
+          echo "❌ ERROR: Fallo al borrar la cache (HTTP $DELETE_CODE)"
+          exit 1
+        fi
+
+        echo "✅ Cache borrada correctamente"
+
     - name: Save updated ccache
-      if: ${{ success() && env.CCACHE_FULL_KEY != '' && steps.restore-ccache.outputs.cache-hit != 'true' }}
+      if: ${{ success() && env.CCACHE_FULL_KEY != '' }}
       uses: actions/cache@v4
       with:
         path: ${{ env.CCACHE_DIR }}
         key: ${{ env.CCACHE_FULL_KEY }}
-
-    - name: Randomized delay before saving clcache
-      if: ${{ success() && env.CLCACHE_KEY != '' && steps.restore-clcache.outputs.cache-hit != 'true' && runner.os == 'Windows' }}
-      shell: pwsh
-      run: |
-        Start-Sleep -Seconds (Get-Random -Maximum 15)
-
-    - name: Save clcache
-      if: ${{ success() && env.CLCACHE_KEY != '' && steps.restore-clcache.outputs.cache-hit != 'true' }}
-      uses: actions/cache@v4
-      with:
-        path: ${{ env.CL_CACHE_DIR }}
-        key: ${{ env.CLCACHE_KEY }}

@@ -36,3 +36,12 @@ Notes:
 - `success()` ensures the step runs only when the job completes successfully (avoids saving partial caches on failure).
 - `env.CCACHE_FULL_KEY` is produced by the `install-toolchain` action when you pass `ccache-key` and the action computes the full key.
 
+- **Permission required for overwrite:** The `install-toolchain` action can delete an existing cache entry via the GitHub API before saving to force an overwrite. To allow this the workflow that calls the action must grant the `GITHUB_TOKEN` write access to actions caches. Add the following at the top of your workflow file:
+
+```yaml
+permissions:
+  actions: write
+```
+
+- **Notes on safety:** Deleting and re-creating caches requires `actions: write` and can race if multiple runs share the same key. If you prefer a safer approach, include a content hash or a run-unique suffix in the cache key so saves always create a new entry.
+
