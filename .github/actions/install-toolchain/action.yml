@@ -1,128 +1,95 @@
-name: Cache and Setup Compiler Toolchain
-description: Caches and sets up compiler toolchains to speed up subsequent installations in GitHub Actions workflows.
-author: David C. Manuelda
-email: StormByte@gmail.com
+name: "Cache and Setup Compiler Toolchain"
+description: "Install and cache compiler toolchains (Linux: gcc/clang, Windows: MSVC + BuildCache)"
+author: "David C. Manuelda"
+email: "StormByte@gmail.com"
 branding:
-  icon: 'settings'
-  color: 'green'
+  icon: "settings"
+  color: "green"
 
 inputs:
   toolchain:
-    description: 'The name of the compiler toolchain to install and cache (gcc, clang or clang-libc++).'
+    description: 'gcc, clang, clang-libc++, or msvc'
     required: true
-    default: ''
   docs:
-    description: 'Whether to install documentation generation tools (Doxygen, Sphinx, etc.) along with the toolchain.'
-    required: false
+    description: 'Install documentation tools (Linux only)'
     default: 'false'
   version:
-    description: 'Optional toolchain major version (single value for gcc/clang). Leave empty to use sensible defaults.'
-    required: false
+    description: 'Optional major version for gcc/clang'
     default: ''
   ccache-key:
-    description: 'Optional cache key for ccache. If empty, ccache restore/save is disabled.'
-    required: false
+    description: 'Cache key for ccache/buildcache'
     default: ''
 
 outputs:
   c_compiler:
-    description: 'Path to C compiler selected.'
     value: ${{ steps.set-outputs.outputs.c_compiler }}
   cxx_compiler:
-    description: 'Path to C++ compiler selected.'
     value: ${{ steps.set-outputs.outputs.cxx_compiler }}
+  buildcache_bin:
+    value: ${{ steps.buildcache-install.outputs.buildcache_bin }}
+  buildcache_wrapper:
+    value: ${{ steps.buildcache-wrapper.outputs.buildcache_wrapper }}
+  buildcache_dir:
+    value: ${{ steps.buildcache-config.outputs.buildcache_dir }}
 
 runs:
   using: "composite"
   steps:
 
     ###########################################################################
-    # 0. EARLY CREATION OF CCACHE DIRECTORY (fixes post-job cache issues)
+    # 0. VERSION RESOLUTION
     ###########################################################################
-    - name: Ensure ccache directory exists early (Linux)
-      if: ${{ runner.os == 'Linux' && inputs.ccache-key != '' }}
-      shell: bash
-      run: |
-        mkdir -p "$HOME/.ccache"
-        echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
-
-    ###########################################################################
-    # 1. VERSION RESOLUTION
-    ###########################################################################
-    - name: Set and validate toolchain version input
+    - name: Resolve toolchain versions (Linux only)
+      id: resolve
+      if: ${{ runner.os == 'Linux' }}
       shell: bash
       run: |
         set -euo pipefail
-        if [[ "${{ inputs.toolchain }}" == "msvc" && -n "${{ inputs.version }}" ]]; then
-          echo "Error: 'version' must not be set when toolchain is 'msvc'" >&2
-          exit 1
-        fi
 
         VER="${{ inputs.version }}"
 
         if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
-          GCC_VER="${VER:-14}"
-          CLANG_VER=20
+          echo "GCC_VERSION=${VER:-14}" >> "$GITHUB_ENV"
+          echo "CLANG_VERSION=20" >> "$GITHUB_ENV"
         elif [[ "${{ inputs.toolchain }}" == "clang" || "${{ inputs.toolchain }}" == "clang-libc++" ]]; then
-          CLANG_VER="${VER:-20}"
-          GCC_VER=14
+          echo "CLANG_VERSION=${VER:-20}" >> "$GITHUB_ENV"
+          echo "GCC_VERSION=14" >> "$GITHUB_ENV"
         else
-          GCC_VER=14
-          CLANG_VER=20
+          echo "GCC_VERSION=14" >> "$GITHUB_ENV"
+          echo "CLANG_VERSION=20" >> "$GITHUB_ENV"
         fi
 
-        echo "GCC_VERSION=$GCC_VER" >> "$GITHUB_ENV"
-        echo "CLANG_VERSION=$CLANG_VER" >> "$GITHUB_ENV"
-
-    - name: Check toolchain input (Linux only)
+    ###########################################################################
+    # 1. LINUX TOOLCHAIN
+    ###########################################################################
+    - name: Validate Linux toolchain
       if: ${{ runner.os == 'Linux' }}
       shell: bash
       run: |
-        if [[ "${{ inputs.toolchain }}" != "gcc" && "${{ inputs.toolchain }}" != "clang" && "${{ inputs.toolchain }}" != "clang-libc++" ]]; then
-          echo "Error: Unsupported toolchain '${{ inputs.toolchain }}'. Supported: gcc, clang, clang-libc++."
-          exit 1
-        fi
+        case "${{ inputs.toolchain }}" in
+          gcc|clang|clang-libc++) ;;
+          *) echo "Unsupported toolchain on Linux"; exit 1 ;;
+        esac
 
-    - name: Check toolchain input (Windows only)
-      if: ${{ runner.os == 'Windows' }}
-      shell: pwsh
-      run: |
-        if ("${{ inputs.toolchain }}" -ne "msvc") {
-          Write-Error "Unsupported toolchain '${{ inputs.toolchain }}'. Only msvc is supported."
-          exit 1
-        }
-
-    ###########################################################################
-    # 2. COMMON TOOLS
-    ###########################################################################
-    - name: Install Ninja
+    - name: Install Ninja (Linux)
       if: ${{ runner.os == 'Linux' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
         packages: "ninja-build"
         cache-key: "apt-ninja-v1"
 
-    - name: Install Ninja
-      if: ${{ runner.os == 'Windows' }}
-      shell: pwsh
-      run: |
-        choco install ninja -y
-
-    - name: Install Python and pip
+    - name: Install Python + Meson
       uses: actions/setup-python@v5
       with:
         python-version: '3.x'
 
     - name: Install Meson 1.4.0
-      shell: pwsh
+      shell: bash
       run: |
         pip install meson==1.4.0
         meson --version
 
-    ###########################################################################
-    # 3. TOOLCHAIN INSTALLATION (LINUX)
-    ###########################################################################
-    - name: Install toolchain (Linux gcc)
+    - name: Install GCC
       if: ${{ runner.os == 'Linux' && inputs.toolchain == 'gcc' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
@@ -135,21 +102,19 @@ runs:
       run: |
         sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-${{ env.GCC_VERSION }} 140
         sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-${{ env.GCC_VERSION }} 140
-        sudo update-alternatives --set gcc /usr/bin/gcc-${{ env.GCC_VERSION }}
-        sudo update-alternatives --set g++ /usr/bin/g++-${{ env.GCC_VERSION }}
 
-    - name: Install toolchain (Linux clang)
+    - name: Install Clang
       if: ${{ runner.os == 'Linux' && inputs.toolchain == 'clang' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
         packages: "build-essential clang-${{ env.CLANG_VERSION }} clang++-${{ env.CLANG_VERSION }} cmake"
         cache-key: "apt-toolchain-clang-${{ env.CLANG_VERSION }}"
 
-    - name: Install toolchain (Linux clang-libc++)
+    - name: Install Clang + libc++
       if: ${{ runner.os == 'Linux' && inputs.toolchain == 'clang-libc++' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
-        packages: "build-essential clang-${{ env.CLANG_VERSION }} clang++-${{ env.CLANG_VERSION }} libc++-${{ env.CLANG_VERSION }}-dev libc++abi-${{ env.CLANG_VERSION }}-dev clang-format-${{ env.CLANG_VERSION }} clang-tidy-${{ env.CLANG_VERSION }} cmake"
+        packages: "build-essential clang-${{ env.CLANG_VERSION }} libc++-${{ env.CLANG_VERSION }}-dev libc++abi-${{ env.CLANG_VERSION }}-dev cmake"
         cache-key: "apt-toolchain-clang-libc++-${{ env.CLANG_VERSION }}"
 
     - name: Register Clang alternatives
@@ -161,42 +126,30 @@ runs:
         sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${{ env.CLANG_VERSION }} 200 --slave /usr/bin/clang++ clang++ /usr/bin/clang++-${{ env.CLANG_VERSION }}
 
     ###########################################################################
-    # 3. TOOLCHAIN INSTALLATION (WINDOWS)
+    # 2. LINUX CCACHE
     ###########################################################################
-    - name: Setup MSVC environment
-      if: ${{ runner.os == 'Windows' }}
-      uses: ilammy/msvc-dev-cmd@v1
-      with:
-        arch: x64
-
-    ###########################################################################
-    # 4. CCACHE (LINUX)
-    ###########################################################################
-    - name: Install ccache (Linux)
+    - name: Install ccache
       if: ${{ runner.os == 'Linux' && inputs.ccache-key != '' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
         packages: "ccache"
         cache-key: "apt-ccache-linux-v1"
 
-    - name: Ensure ccache symlinks are first in PATH
+    - name: Configure ccache
       if: ${{ runner.os == 'Linux' && inputs.ccache-key != '' }}
       shell: bash
       run: |
+        mkdir -p "$HOME/.ccache"
+        echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
         if [ -d /usr/lib/ccache ]; then
           echo "PATH=/usr/lib/ccache:$PATH" >> "$GITHUB_ENV"
         elif [ -d /usr/lib64/ccache ]; then
           echo "PATH=/usr/lib64/ccache:$PATH" >> "$GITHUB_ENV"
         fi
-
-    - name: Configure ccache
-      if: ${{ runner.os == 'Linux' && inputs.ccache-key != '' }}
-      shell: bash
-      run: |
         echo "CCACHE_MAXSIZE=2G" >> "$GITHUB_ENV"
         ccache -M 2G || true
 
-    - name: Determine toolchain cache version
+    - name: Determine toolchain cache version (Linux)
       if: ${{ runner.os == 'Linux' }}
       shell: bash
       run: |
@@ -225,9 +178,28 @@ runs:
         key: ${{ env.CCACHE_FULL_KEY }}
 
     ###########################################################################
-    # 4. BUILDCACHE (WINDOWS) — INSTALACIÓN MANUAL + WRAPPER cl.bat
+    # 3. WINDOWS TOOLCHAIN (MSVC)
     ###########################################################################
-    - name: Install BuildCache manually (Windows)
+    - name: Validate Windows toolchain
+      if: ${{ runner.os == 'Windows' }}
+      shell: pwsh
+      run: |
+        if ("${{ inputs.toolchain }}" -ne "msvc") {
+          Write-Error "Only MSVC is supported on Windows"
+          exit 1
+        }
+
+    - name: Setup MSVC environment
+      if: ${{ runner.os == 'Windows' }}
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
+    ###########################################################################
+    # 4. WINDOWS BUILDCACHE + WRAPPER
+    ###########################################################################
+    - name: Install BuildCache
+      id: buildcache-install
       if: ${{ runner.os == 'Windows' && inputs.ccache-key != '' }}
       shell: pwsh
       run: |
@@ -236,99 +208,73 @@ runs:
         $zipPath = "$env:RUNNER_TEMP\buildcache.zip"
         $extractDir = "$env:RUNNER_TEMP\buildcache"
 
-        Write-Host "Downloading BuildCache from $zipUrl"
         Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
-
-        Write-Host "Extracting BuildCache to $extractDir"
         Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
 
-        # Ruta real del ejecutable
         $bcExe = Join-Path $extractDir "buildcache\bin\buildcache.exe"
-
-        if (!(Test-Path $bcExe)) {
-          Write-Error "BuildCache executable not found at $bcExe"
-          exit 1
-        }
-
-        # Añadir al PATH
-        $bcBin = Split-Path $bcExe
-        "PATH=$bcBin;$env:PATH" >> $env:GITHUB_ENV
-
-        # Verificar instalación
-        & $bcExe --version
+        "buildcache_bin=$bcExe" | Out-File $env:GITHUB_OUTPUT -Append
 
     - name: Configure BuildCache directory
+      id: buildcache-config
       if: ${{ runner.os == 'Windows' && inputs.ccache-key != '' }}
       shell: pwsh
       run: |
         $dir = "$env:LOCALAPPDATA\buildcache"
-        if (!(Test-Path $dir)) {
-          New-Item -ItemType Directory -Path $dir | Out-Null
-        }
+        if (!(Test-Path $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
         "BUILDCACHE_DIR=$dir" >> $env:GITHUB_ENV
-
-    - name: Configure BuildCache max size
-      if: ${{ runner.os == 'Windows' && inputs.ccache-key != '' }}
-      shell: pwsh
-      run: |
-        $conf = "$env:LOCALAPPDATA\buildcache\buildcache.conf"
-
-        if (!(Test-Path $conf)) {
-          New-Item -ItemType File -Path $conf | Out-Null
-        }
-
-        $content = Get-Content $conf -Raw
-
-        if ($content -notmatch "max_cache_size") {
-          Add-Content $conf "`nmax_cache_size = 2000`n"
-        } else {
-          $content = $content -replace "max_cache_size\s*=\s*\d+", "max_cache_size = 2000"
-          Set-Content $conf $content
-        }
-
-        Write-Host "BuildCache max size set to 2000 MB"
-
-    - name: Create BuildCache cl.exe wrapper for Ninja/MSVC
-      if: ${{ runner.os == 'Windows' && inputs.ccache-key != '' }}
-      shell: pwsh
-      run: |
-        # Ruta real al compilador MSVC
-        $realCl = "$env:VCToolsInstallDir\bin\Hostx64\x64\cl.exe"
-
-        # Ruta al buildcache.exe
-        $bcExe = "$env:RUNNER_TEMP\buildcache\buildcache\bin\buildcache.exe"
-
-        # Crear wrapper cl.bat
-        $wrapperDir = "$env:RUNNER_TEMP\buildcache-wrapper"
-        New-Item -ItemType Directory -Path $wrapperDir -Force | Out-Null
-
-        $wrapper = @"
-        @echo off
-        setlocal
-        set REAL_CL=$realCl
-        set BUILDCACHE_IMPERSONATE=%REAL_CL%
-        "$bcExe" "%REAL_CL%" %*
-        endlocal
-        "@
-
-        Set-Content -Path "$wrapperDir\cl.bat" -Value $wrapper -Encoding ASCII
-
-        # Poner wrapper primero en PATH
-        "PATH=$wrapperDir;$env:PATH" >> $env:GITHUB_ENV
-
-    - name: Determine toolchain cache version (Windows)
-      if: ${{ runner.os == 'Windows' }}
-      shell: pwsh
-      run: |
-        "TOOLCHAIN_VERSION=msvc" >> $env:GITHUB_ENV
+        "buildcache_dir=$dir" | Out-File $env:GITHUB_OUTPUT -Append
 
     - name: Compute BuildCache full key
+      id: compute-key
       if: ${{ runner.os == 'Windows' && inputs.ccache-key != '' }}
       shell: pwsh
       run: |
         $suffix = "${{ inputs.ccache-key }}"
         $sanitized = $suffix -replace '[^A-Za-z0-9._+-]', '-'
-        "BUILDCACHE_FULL_KEY=buildcache-msvc-$sanitized" >> $env:GITHUB_ENV
+        $key = "buildcache-msvc-$sanitized"
+
+        # Export to environment
+        "BUILDCACHE_FULL_KEY=$key" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+        # Export as output (safe for cache@v4)
+        "buildcache_full_key=$key" | Out-File $env:GITHUB_OUTPUT -Append 
+
+    - name: Create BuildCache wrapper (cl.bat)
+      id: buildcache-wrapper
+      if: ${{ runner.os == 'Windows' && inputs.ccache-key != '' }}
+      shell: pwsh
+      run: |
+        $realCl = "$env:VCToolsInstallDir\bin\Hostx64\x64\cl.exe"
+        $bcExe  = "${{ steps.buildcache-install.outputs.buildcache_bin }}"
+        $wrapperDir = "$env:RUNNER_TEMP\buildcache-wrapper"
+        New-Item -ItemType Directory -Path $wrapperDir -Force | Out-Null
+
+        $lines = @(
+          '@echo off'
+          'setlocal'
+          "set REAL_CL=$realCl"
+          'set BUILDCACHE_IMPERSONATE=%REAL_CL%'
+          "`"$bcExe`" `"%REAL_CL%`" %*"
+          'endlocal'
+        )
+
+        Set-Content -Path "$wrapperDir\cl.bat" -Value $lines -Encoding ASCII
+        "buildcache_wrapper=$wrapperDir" | Out-File $env:GITHUB_OUTPUT -Append
+
+    - name: Add BuildCache wrapper to PATH
+      if: ${{ runner.os == 'Windows' && inputs.ccache-key != '' }}
+      shell: pwsh
+      run: |
+        $wrapper = "${{ steps.buildcache-wrapper.outputs.buildcache_wrapper }}"
+        "PATH=$wrapper;$env:PATH" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+    - name: Export wrapper as CMake compiler
+      if: ${{ runner.os == 'Windows' && inputs.ccache-key != '' }}
+      shell: pwsh
+      run: |
+        $wrapper = "${{ steps.buildcache-wrapper.outputs.buildcache_wrapper }}\cl.bat"
+        "CMAKE_C_COMPILER=$wrapper"  | Out-File -FilePath $env:GITHUB_ENV -Append
+        "CMAKE_CXX_COMPILER=$wrapper" | Out-File -FilePath $env:GITHUB_ENV -Append
 
     - name: Restore BuildCache
       if: ${{ runner.os == 'Windows' && inputs.ccache-key != '' }}
@@ -336,12 +282,12 @@ runs:
       uses: actions/cache@v4
       with:
         path: ${{ env.BUILDCACHE_DIR }}
-        key: ${{ env.BUILDCACHE_FULL_KEY }}
+        key: ${{ steps.compute-key.outputs.buildcache_full_key }}
 
     ###########################################################################
-    # 5. DOXYGEN AND DEPENDENCIES
+    # 5. DOXYGEN (LINUX)
     ###########################################################################
-    - name: Install Doxygen and dependencies (if requested)
+    - name: Install Doxygen and dependencies (Linux)
       if: ${{ inputs.docs == 'true' && runner.os == 'Linux' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
@@ -349,34 +295,37 @@ runs:
         cache-key: "apt-doxygen-and-optional-v1"
 
     ###########################################################################
-    # 6. OUTPUTS
+    # 6. OUTPUTS (COMPILERS) — MULTIPLATAFORMA (pwsh)
     ###########################################################################
-    - name: Set outputs and environment variables
+    - name: Set outputs
       id: set-outputs
       shell: pwsh
       run: |
-        $toolchain = "${{ inputs.toolchain }}"
+        $tool = "${{ inputs.toolchain }}"
 
-        if ($toolchain -eq "gcc") {
-          $c  = "gcc"
-          $cxx = "g++"
+        if ($tool -eq "gcc") {
+            $c  = "gcc"
+            $cxx = "g++"
         }
-        elseif ($toolchain -eq "clang" -or $toolchain -eq "clang-libc++") {
-          $c  = "clang"
-          $cxx = "clang++"
+        elseif ($tool -eq "clang" -or $tool -eq "clang-libc++") {
+            $c  = "clang"
+            $cxx = "clang++"
         }
         else {
-          $c  = "cl"
-          $cxx = "cl"
+            $c  = "cl"
+            $cxx = "cl"
         }
 
-        "c_compiler=$c"     >> $env:GITHUB_OUTPUT
-        "cxx_compiler=$cxx" >> $env:GITHUB_OUTPUT
-        "CC=$c"             >> $env:GITHUB_ENV
-        "CXX=$cxx"          >> $env:GITHUB_ENV
+        # Outputs
+        "c_compiler=$c"  | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "cxx_compiler=$cxx" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+        # Environment variables
+        "CC=$c"  | Out-File -FilePath $env:GITHUB_ENV -Append
+        "CXX=$cxx" | Out-File -FilePath $env:GITHUB_ENV -Append
 
     ###########################################################################
-    # 7. SAVE CCACHE / CLCACHE
+    # 7. SAVE CCACHE (LINUX)
     ###########################################################################
     - name: Randomized delay before saving ccache
       if: ${{ success() && env.CCACHE_FULL_KEY != '' && runner.os == 'Linux' }}
@@ -399,23 +348,12 @@ runs:
         REPO="${GITHUB_REPOSITORY}"
         TOKEN="${GITHUB_TOKEN}"
 
-        echo "🔍 Consultando API de GitHub para borrar cache…"
         HTTP_CODE=$(curl -s -o resp.json -w "%{http_code}" \
           -H "Authorization: token $TOKEN" \
           "https://api.github.com/repos/${REPO}/actions/caches?key=${ENC_KEY}")
 
-        echo "🔍 HTTP code: $HTTP_CODE"
-        echo "🔍 Respuesta cruda del servidor:"
-        cat resp.json || true
-        echo "----------------------------------------"
-
         if [ "$HTTP_CODE" -ne 200 ]; then
           echo "❌ ERROR: La API devolvió un código inesperado ($HTTP_CODE)"
-          exit 1
-        fi
-
-        if ! head -c 1 resp.json | grep -q '{'; then
-          echo "❌ ERROR: La respuesta NO es JSON válido"
           exit 1
         fi
 
@@ -426,7 +364,6 @@ runs:
           exit 0
         fi
 
-        echo "🗑️ Borrando cache id $cache_id"
         DELETE_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
           -X DELETE -H "Authorization: token $TOKEN" \
           "https://api.github.com/repos/${REPO}/actions/caches/${cache_id}")
@@ -436,11 +373,58 @@ runs:
           exit 1
         fi
 
-        echo "✅ Cache borrada correctamente"
-
     - name: Save updated ccache
-      if: ${{ success() && env.CCACHE_FULL_KEY != '' }}
+      if: ${{ success() && env.CCACHE_FULL_KEY != '' && runner.os == 'Linux' }}
       uses: actions/cache@v4
       with:
         path: ${{ env.CCACHE_DIR }}
         key: ${{ env.CCACHE_FULL_KEY }}
+
+    ###########################################################################
+    # 8. SAVE BUILDCACHE (WINDOWS)
+    ###########################################################################
+    - name: Randomized delay before saving BuildCache
+      if: ${{ success() && env.BUILDCACHE_FULL_KEY != '' && runner.os == 'Windows' }}
+      shell: pwsh
+      run: |
+        Start-Sleep -Seconds (Get-Random -Minimum 1 -Maximum 15)
+
+    - name: Delete existing BuildCache entry (Windows)
+      if: ${{ success() && env.BUILDCACHE_FULL_KEY != '' && runner.os == 'Windows' }}
+      shell: pwsh
+      run: |
+        if (-not $env:GITHUB_TOKEN) {
+          Write-Error "GITHUB_TOKEN no está definido"
+          exit 1
+        }
+
+        $encodedKey = [System.Web.HttpUtility]::UrlEncode($env:BUILDCACHE_FULL_KEY)
+        $repo = $env:GITHUB_REPOSITORY
+        $token = $env:GITHUB_TOKEN
+
+        $url = "https://api.github.com/repos/$repo/actions/caches?key=$encodedKey"
+        $resp = Invoke-WebRequest -Headers @{ Authorization = "token $token" } -Uri $url -UseBasicParsing
+        $json = $resp.Content | ConvertFrom-Json
+
+        if ($json.actions_caches.Count -eq 0) {
+          Write-Host "No BuildCache entry found to delete"
+          exit 0
+        }
+
+        $cacheId = $json.actions_caches[0].id
+        Write-Host "Deleting BuildCache entry id $cacheId"
+
+        $delUrl = "https://api.github.com/repos/$repo/actions/caches/$cacheId"
+        $delResp = Invoke-WebRequest -Headers @{ Authorization = "token $token" } -Uri $delUrl -Method DELETE -UseBasicParsing
+
+        if ($delResp.StatusCode -ne 204) {
+          Write-Error "Failed to delete BuildCache entry (HTTP $($delResp.StatusCode))"
+          exit 1
+        }
+
+    - name: Save updated BuildCache
+      if: ${{ success() && env.BUILDCACHE_FULL_KEY != '' && runner.os == 'Windows' }}
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.BUILDCACHE_DIR }}
+        key: ${{ env.BUILDCACHE_FULL_KEY }}
