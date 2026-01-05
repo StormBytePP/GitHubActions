@@ -41,7 +41,7 @@ runs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-        submodules: true
+        submodules: recursive
 
     ###########################################################################
     # 2. INSTALL TOOLCHAIN + DOC TOOLS
