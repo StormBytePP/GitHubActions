@@ -85,7 +85,7 @@ runs:
   steps:
 
     ###########################################################################
-    # 0. COMPILER CACHE KEYS (per OS + toolchain; variant hash avoids matrix races)
+    # 0. COMPILER CACHE KEYS + STABLE CACHE DIRS
     ###########################################################################
     - name: Compute compiler cache keys
       if: inputs.ccache-key != ''
@@ -104,14 +104,27 @@ runs:
 
         if [ "$OS" = "Windows" ]; then
           PREFIX="sccache"
+          # Fixed location for restore/save + sccache (must match install-toolchain if any)
+          if [ -z "${SCCACHE_DIR:-}" ]; then
+            # GitHub-hosted default; override only when unset
+            SCCACHE_DIR="${LOCALAPPDATA:-$USERPROFILE/AppData/Local}/Mozilla/sccache/cache"
+            # Prefer RUNNER_TEMP when available for isolation
+            if [ -n "${RUNNER_TEMP:-}" ]; then
+              SCCACHE_DIR="${RUNNER_TEMP}/sccache"
+            fi
+          fi
+          mkdir -p "$SCCACHE_DIR"
+          echo "SCCACHE_DIR=${SCCACHE_DIR}" >> "$GITHUB_ENV"
+          export SCCACHE_DIR
+          echo "SCCACHE_DIR=${SCCACHE_DIR}"
         else
           PREFIX="ccache"
-          # Stable dir for restore/save + ccache (before install-toolchain)
-          if [ -z "${CCACHE_DIR:-}" ]; then
-            echo "CCACHE_DIR=${RUNNER_TEMP}/ccache" >> "$GITHUB_ENV"
-            export CCACHE_DIR="${RUNNER_TEMP}/ccache"
-          fi
-          mkdir -p "${CCACHE_DIR}"
+          # ALWAYS use RUNNER_TEMP — do not let install-toolchain stick ~/.ccache
+          CCACHE_DIR="${RUNNER_TEMP}/ccache"
+          mkdir -p "$CCACHE_DIR"
+          echo "CCACHE_DIR=${CCACHE_DIR}" >> "$GITHUB_ENV"
+          export CCACHE_DIR
+          echo "CCACHE_DIR=${CCACHE_DIR}"
         fi
 
         BASE="${PREFIX}-${OS}-${TOOL}-${SUFFIX}"
@@ -137,9 +150,6 @@ runs:
 
         echo "Compiler cache BASE=${BASE}"
         echo "Compiler cache SAVE=${SAVE}"
-        if [ "$OS" != "Windows" ]; then
-          echo "CCACHE_DIR=${CCACHE_DIR:-}"
-        fi
 
     ###########################################################################
     # 1. INSTALL TOOLCHAIN
@@ -155,7 +165,61 @@ runs:
         install-meson: ${{ inputs.install-meson }}
 
     ###########################################################################
-    # 1a. PIN MESON 1.10.0 (single place — no duplicate install)
+    # 1a. RE-PIN CACHE DIRS + EXPORT LAUNCHERS FOR BUILDMASTER (ENV fallback)
+    ###########################################################################
+    - name: Pin cache dirs and export compiler launchers
+      if: inputs.ccache-key != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        OS="${{ runner.os }}"
+
+        if [ "$OS" = "Windows" ]; then
+          if [ -z "${SCCACHE_DIR:-}" ]; then
+            if [ -n "${RUNNER_TEMP:-}" ]; then
+              SCCACHE_DIR="${RUNNER_TEMP}/sccache"
+            else
+              SCCACHE_DIR="${LOCALAPPDATA:-$USERPROFILE/AppData/Local}/Mozilla/sccache/cache"
+            fi
+          fi
+          mkdir -p "$SCCACHE_DIR"
+          echo "SCCACHE_DIR=${SCCACHE_DIR}" >> "$GITHUB_ENV"
+
+          # CMake -D + ENV for BuildMaster create_*_stages / runners
+          echo "CMAKE_C_COMPILER_LAUNCHER=sccache" >> "$GITHUB_ENV"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=sccache" >> "$GITHUB_ENV"
+
+          if command -v sccache >/dev/null 2>&1; then
+            sccache --stop-server 2>/dev/null || true
+            sccache --start-server 2>/dev/null || true
+            sccache --zero-stats 2>/dev/null || true
+            echo "sccache ready (dir=${SCCACHE_DIR})"
+            sccache --show-stats || true
+          else
+            echo "WARNING: sccache not on PATH after install-toolchain"
+          fi
+        else
+          # Force RUNNER_TEMP even if install-toolchain set ~/.ccache
+          CCACHE_DIR="${RUNNER_TEMP}/ccache"
+          mkdir -p "$CCACHE_DIR"
+          echo "CCACHE_DIR=${CCACHE_DIR}" >> "$GITHUB_ENV"
+          export CCACHE_DIR
+
+          echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> "$GITHUB_ENV"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "$GITHUB_ENV"
+
+          if command -v ccache >/dev/null 2>&1; then
+            ccache -z || true
+            echo "ccache ready (dir=${CCACHE_DIR})"
+            ccache -s || true
+          else
+            echo "WARNING: ccache not on PATH after install-toolchain"
+          fi
+        fi
+
+    ###########################################################################
+    # 1b. PIN MESON 1.10.0 (single place — no duplicate install)
     ###########################################################################
     - name: Pin Meson 1.10.0
       if: inputs.install-meson != 'false'
@@ -204,7 +268,7 @@ runs:
         esac
 
     ###########################################################################
-    # 1b. RESTORE COMPILER CACHE
+    # 1c. RESTORE COMPILER CACHE
     ###########################################################################
     - name: Restore ccache
       if: inputs.ccache-key != '' && (runner.os == 'Linux' || runner.os == 'macOS')
@@ -225,7 +289,7 @@ runs:
           ${{ steps.cachekeys.outputs.base_key }}-
 
     ###########################################################################
-    # 1c. WINDOWS: drop GNU link.exe shadows + clean __VSCMD_PREINIT_PATH
+    # 1d. WINDOWS: drop GNU link.exe shadows + clean __VSCMD_PREINIT_PATH
     ###########################################################################
     - name: Sanitize PATH for MSVC linker
       if: runner.os == 'Windows'
@@ -300,7 +364,7 @@ runs:
         exit 0
 
     ###########################################################################
-    # 2. CONFIGURE
+    # 2. CONFIGURE (explicit -D launchers = required for parent + BuildMaster)
     ###########################################################################
     - name: Configure CMake (Linux/macOS)
       if: runner.os != 'Windows'
@@ -312,17 +376,19 @@ runs:
 
         LAUNCHER_ARGS=()
         if [ -n "${{ inputs.ccache-key }}" ] && command -v ccache >/dev/null 2>&1; then
-          if [ -z "${CCACHE_DIR:-}" ]; then
-            export CCACHE_DIR="${RUNNER_TEMP}/ccache"
-            echo "CCACHE_DIR=${CCACHE_DIR}" >> "$GITHUB_ENV"
-          fi
+          # Re-assert after any step that might have changed env
+          export CCACHE_DIR="${CCACHE_DIR:-${RUNNER_TEMP}/ccache}"
           mkdir -p "${CCACHE_DIR}"
-          # Zero stats for this run; files already restored stay on disk
-          ccache -z || true
+          echo "CCACHE_DIR=${CCACHE_DIR}" >> "$GITHUB_ENV"
+
           LAUNCHER_ARGS+=(
             -DCMAKE_C_COMPILER_LAUNCHER=ccache
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           )
+          # Also keep ENV in sync for BuildMaster (create_cmake_stages / runners)
+          echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> "$GITHUB_ENV"
+          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "$GITHUB_ENV"
+
           echo "Using ccache as compiler launcher (dir=${CCACHE_DIR})"
           ccache -s || true
         else
@@ -364,10 +430,30 @@ runs:
           $cmakeArgs.Add("-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded")
         }
 
-        if ($env:CMAKE_C_COMPILER_LAUNCHER -or (Get-Command sccache -ErrorAction SilentlyContinue)) {
-          Write-Host "Using sccache launcher"
+        $useSccache = $false
+        if ("${{ inputs.ccache-key }}" -ne "") {
+          if (Get-Command sccache -ErrorAction SilentlyContinue) {
+            $useSccache = $true
+          }
+        }
+
+        if ($useSccache) {
+          Write-Host "Using sccache launcher (explicit -D + ENV for BuildMaster)"
           $cmakeArgs.Add("-DCMAKE_C_COMPILER_LAUNCHER=sccache")
           $cmakeArgs.Add("-DCMAKE_CXX_COMPILER_LAUNCHER=sccache")
+
+          if (-not $env:SCCACHE_DIR -or $env:SCCACHE_DIR -eq "") {
+            if ($env:RUNNER_TEMP) {
+              $env:SCCACHE_DIR = Join-Path $env:RUNNER_TEMP "sccache"
+            } else {
+              $env:SCCACHE_DIR = Join-Path $env:LOCALAPPDATA "Mozilla\sccache\cache"
+            }
+          }
+          New-Item -ItemType Directory -Force -Path $env:SCCACHE_DIR | Out-Null
+          "SCCACHE_DIR=$($env:SCCACHE_DIR)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CMAKE_C_COMPILER_LAUNCHER=sccache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CMAKE_CXX_COMPILER_LAUNCHER=sccache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "SCCACHE_DIR=$($env:SCCACHE_DIR)"
         } else {
           Write-Host "WARNING: sccache not configured – caching disabled"
         }
@@ -468,6 +554,7 @@ runs:
         echo " COMPILER CACHE STATISTICS"
         echo "=============================================="
         if [[ "${{ runner.os }}" == "Windows" ]]; then
+          echo "SCCACHE_DIR=${SCCACHE_DIR:-<unset>}"
           command -v sccache >/dev/null 2>&1 && sccache --show-stats || echo "sccache not found in PATH"
         else
           echo "CCACHE_DIR=${CCACHE_DIR:-<unset>}"
