@@ -17,7 +17,7 @@ inputs:
     default: "recursive"
 
   token:
-    description: "Token used for checkout and submodule fetch"
+    description: "Token used for checkout, submodule fetch, and optional cache prune"
     required: false
     default: ${{ github.token }}
 
@@ -35,6 +35,14 @@ inputs:
     description: "Relative path under $GITHUB_WORKSPACE to place the repository"
     required: false
     default: "."
+
+  prune-old-caches:
+    description: >
+      On cache miss, delete other Actions caches in this repo whose key starts
+      with cache-key-prefix (frees space; does not wait for GitHub eviction).
+      Requires permissions: actions: write. Default true.
+    required: false
+    default: "true"
 
 runs:
   using: "composite"
@@ -77,13 +85,11 @@ runs:
 
         echo "has_submodules=true" >> "$GITHUB_OUTPUT"
 
-        # Deterministic key from gitlink SHAs recorded in the parent tree
         HASH="$(git ls-tree HEAD -- "${PATHS[@]}" | sha256sum | awk '{print substr($1,1,20)}')"
         PREFIX="${{ inputs.cache-key-prefix }}"
         echo "cache_key=${PREFIX}-${HASH}" >> "$GITHUB_OUTPUT"
         echo "cache_key=${PREFIX}-${HASH}"
 
-        # Multiline path list for actions/cache (modules + working trees)
         {
           echo "cache_paths<<EOF"
           echo ".git/modules"
@@ -110,7 +116,6 @@ runs:
       shell: bash
       working-directory: ${{ inputs.path }}
       env:
-        # Ensure HTTPS submodules can authenticate on private repos
         token: ${{ inputs.token }}
       run: |
         set -euo pipefail
@@ -122,7 +127,6 @@ runs:
 
         if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
           echo "Submodule cache HIT – verifying working trees"
-          # Fast when objects/worktrees already match; repairs incomplete restores
           git submodule sync $RECURSIVE_FLAG
           git submodule update --init $RECURSIVE_FLAG --force
         else
@@ -145,3 +149,62 @@ runs:
       with:
         path: ${{ steps.meta.outputs.cache_paths }}
         key: ${{ steps.meta.outputs.cache_key }}
+
+    ###########################################################################
+    # 6. PRUNE OLD SUBMODULE CACHES (miss only, same prefix, not current key)
+    ###########################################################################
+    - name: Prune old submodule caches
+      if: >-
+        inputs.submodules != 'false'
+        && steps.meta.outputs.has_submodules == 'true'
+        && steps.cache.outputs.cache-hit != 'true'
+        && inputs.prune-old-caches == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        PREFIX: ${{ inputs.cache-key-prefix }}
+        KEEP_KEY: ${{ steps.meta.outputs.cache_key }}
+      run: |
+        set -euo pipefail
+
+        if ! command -v gh >/dev/null 2>&1; then
+          echo "gh not available – skipping prune"
+          exit 0
+        fi
+
+        echo "Pruning caches with prefix '${PREFIX}-' except '${KEEP_KEY}'"
+
+        # --key matches by prefix; page through a reasonable limit
+        mapfile -t ENTRIES < <(
+          gh cache list --key "${PREFIX}-" --limit 100 \
+            --json id,key,sizeInBytes \
+            --jq '.[] | "\(.id)\t\(.key)\t\(.sizeInBytes)"' \
+            2>/dev/null || true
+        )
+
+        if [ ${#ENTRIES[@]} -eq 0 ]; then
+          echo "No matching caches to prune"
+          exit 0
+        fi
+
+        deleted=0
+        for entry in "${ENTRIES[@]}"; do
+          id="${entry%%$'\t'*}"
+          rest="${entry#*$'\t'}"
+          key="${rest%%$'\t'*}"
+          size="${rest#*$'\t'}"
+
+          if [ -z "$id" ] || [ "$key" = "$KEEP_KEY" ]; then
+            echo "Keep: $key"
+            continue
+          fi
+
+          echo "Delete: id=$id key=$key size=${size:-?}B"
+          if gh cache delete "$id" 2>/dev/null; then
+            deleted=$((deleted + 1))
+          else
+            echo "  (delete failed – ignored)"
+          fi
+        done
+
+        echo "Pruned $deleted old cache(s)"

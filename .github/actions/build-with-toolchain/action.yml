@@ -80,7 +80,7 @@ runs:
   steps:
 
     ###########################################################################
-    # 1. INSTALL TOOLCHAIN (restore cache only; save happens after build)
+    # 1. INSTALL TOOLCHAIN
     ###########################################################################
     - name: Install toolchain
       id: toolchain
@@ -93,9 +93,8 @@ runs:
         install-meson: ${{ inputs.install-meson }}
 
     ###########################################################################
-    # 1b. WINDOWS: drop GNU link.exe shadows (Git / Strawberry / MinGW)
-    #     Also needed for nested Meson/Ninja; Build itself must use pwsh, not bash
-    #     (Git Bash re-prepends Git\usr\bin and would undo this).
+    # 1b. WINDOWS PATH: drop GNU link + neutralize __VSCMD_PREINIT_PATH
+    #     (ashutoshvarma removes Git sh.exe dir; we also fix PREINIT used by VS tools)
     ###########################################################################
     - name: Sanitize PATH for MSVC linker
       if: runner.os == 'Windows'
@@ -103,34 +102,36 @@ runs:
       run: |
         $ErrorActionPreference = "Stop"
 
-        $gnuPathFragments = @(
-          'Git\usr\bin',
-          'Git\mingw64\bin',
-          'Git\mingw32\bin',
-          'Strawberry\c\bin',
-          'Strawberry\c\x86_64-w64-mingw32',
-          'msys64\usr\bin',
-          'msys64\mingw64\bin',
-          'cygwin64\bin',
-          'mingw64\bin',
-          'mingw32\bin'
-        )
-
-        $parts = [System.Collections.Generic.List[string]]::new()
-        foreach ($p in ($env:Path -split ';')) {
-          if ([string]::IsNullOrWhiteSpace($p)) { continue }
-          $drop = $false
-          foreach ($frag in $gnuPathFragments) {
-            if ($p -like "*$frag*") {
-              Write-Host "PATH: removing GNU shadow: $p"
-              $drop = $true
-              break
+        function Remove-GnuShadowPaths([string]$pathValue) {
+          $gnuPathFragments = @(
+            'Git\usr\bin',
+            'Git\mingw64\bin',
+            'Git\mingw32\bin',
+            'Strawberry\c\bin',
+            'Strawberry\c\x86_64-w64-mingw32',
+            'msys64\usr\bin',
+            'msys64\mingw64\bin',
+            'cygwin64\bin',
+            'mingw64\bin',
+            'mingw32\bin'
+          )
+          $parts = [System.Collections.Generic.List[string]]::new()
+          foreach ($p in ($pathValue -split ';')) {
+            if ([string]::IsNullOrWhiteSpace($p)) { continue }
+            $drop = $false
+            foreach ($frag in $gnuPathFragments) {
+              if ($p -like "*$frag*") {
+                Write-Host "PATH: removing GNU shadow: $p"
+                $drop = $true
+                break
+              }
             }
+            if (-not $drop) { $parts.Add($p) }
           }
-          if (-not $drop) { $parts.Add($p) }
+          return ($parts -join ';')
         }
 
-        $env:Path = ($parts -join ';')
+        $env:Path = Remove-GnuShadowPaths $env:Path
 
         $linkCmd = Get-Command link.exe -ErrorAction SilentlyContinue
         if ($null -eq $linkCmd) {
@@ -141,12 +142,19 @@ runs:
         $linkDir = Split-Path -Parent $linkCmd.Source
         $env:Path = "$linkDir;$env:Path"
 
+        # Persist for later steps
         $linkDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         "PATH=$env:Path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-        Write-Host "Using linker: $($linkCmd.Source)"
+        # Critical: VsDevCmd / some tools re-apply this and reintroduce Git/Strawberry
+        if ($env:__VSCMD_PREINIT_PATH) {
+          $cleanPreinit = Remove-GnuShadowPaths $env:__VSCMD_PREINIT_PATH
+          $env:__VSCMD_PREINIT_PATH = $cleanPreinit
+          "__VSCMD_PREINIT_PATH=$cleanPreinit" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Cleaned __VSCMD_PREINIT_PATH"
+        }
 
-        # link.exe exits 1 with no inputs; probe via cmd so the step does not fail
+        Write-Host "Using linker: $($linkCmd.Source)"
         $banner = cmd /c "link.exe 2>&1"
         if ($banner -notmatch 'Microsoft') {
           Write-Error "Expected MSVC link.exe, got non-Microsoft banner"
@@ -227,13 +235,53 @@ runs:
 
     ###########################################################################
     # 3. BUILD
-    #    Windows MUST use pwsh/cmd — Git Bash prepends Git\usr\bin (GNU link.exe)
     ###########################################################################
     - name: Build (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
+
+        # Re-assert MSVC link for this process tree (nested meson/ninja/runner.bat)
+        function Remove-GnuShadowPaths([string]$pathValue) {
+          $gnuPathFragments = @(
+            'Git\usr\bin', 'Git\mingw64\bin', 'Git\mingw32\bin',
+            'Strawberry\c\bin', 'Strawberry\c\x86_64-w64-mingw32',
+            'msys64\usr\bin', 'msys64\mingw64\bin', 'cygwin64\bin',
+            'mingw64\bin', 'mingw32\bin'
+          )
+          $parts = [System.Collections.Generic.List[string]]::new()
+          foreach ($p in ($pathValue -split ';')) {
+            if ([string]::IsNullOrWhiteSpace($p)) { continue }
+            $drop = $false
+            foreach ($frag in $gnuPathFragments) {
+              if ($p -like "*$frag*") { $drop = $true; break }
+            }
+            if (-not $drop) { $parts.Add($p) }
+          }
+          return ($parts -join ';')
+        }
+
+        $env:Path = Remove-GnuShadowPaths $env:Path
+        $linkCmd = Get-Command link.exe -ErrorAction SilentlyContinue
+        if ($null -eq $linkCmd) {
+          Write-Error "link.exe not found before build"
+          exit 1
+        }
+        $linkDir = Split-Path -Parent $linkCmd.Source
+        $env:Path = "$linkDir;$env:Path"
+        if ($env:__VSCMD_PREINIT_PATH) {
+          $env:__VSCMD_PREINIT_PATH = Remove-GnuShadowPaths $env:__VSCMD_PREINIT_PATH
+        }
+
+        Write-Host "Build-time linker resolution:"
+        where.exe link
+        $banner = cmd /c "link.exe 2>&1"
+        if ($banner -notmatch 'Microsoft') {
+          Write-Error "Build step still sees non-MSVC link.exe"
+          exit 1
+        }
+
         $target = "${{ inputs.target }}"
         if ($target -ne "") {
           cmake --build "${{ inputs.build-dir }}" --target $target --parallel
