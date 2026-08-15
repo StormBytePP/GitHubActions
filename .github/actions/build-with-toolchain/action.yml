@@ -106,6 +106,12 @@ runs:
           PREFIX="sccache"
         else
           PREFIX="ccache"
+          # Stable dir for restore/save + ccache (before install-toolchain)
+          if [ -z "${CCACHE_DIR:-}" ]; then
+            echo "CCACHE_DIR=${RUNNER_TEMP}/ccache" >> "$GITHUB_ENV"
+            export CCACHE_DIR="${RUNNER_TEMP}/ccache"
+          fi
+          mkdir -p "${CCACHE_DIR}"
         fi
 
         BASE="${PREFIX}-${OS}-${TOOL}-${SUFFIX}"
@@ -114,7 +120,12 @@ runs:
             "${{ inputs.configure-options }}" \
             "${{ inputs.build-type }}" \
             "${{ inputs.target }}" \
-          | sha256sum | cut -c1-12
+          | sha256sum 2>/dev/null | cut -c1-12 \
+          || printf '%s\0%s\0%s' \
+            "${{ inputs.configure-options }}" \
+            "${{ inputs.build-type }}" \
+            "${{ inputs.target }}" \
+          | shasum -a 256 | cut -c1-12
         )"
         SAVE="${BASE}-${GITHUB_RUN_ID}-${VARIANT}"
 
@@ -126,6 +137,9 @@ runs:
 
         echo "Compiler cache BASE=${BASE}"
         echo "Compiler cache SAVE=${SAVE}"
+        if [ "$OS" != "Windows" ]; then
+          echo "CCACHE_DIR=${CCACHE_DIR:-}"
+        fi
 
     ###########################################################################
     # 1. INSTALL TOOLCHAIN
@@ -140,30 +154,9 @@ runs:
         docs: ${{ inputs.docs }}
         install-meson: ${{ inputs.install-meson }}
 
-    # Meson is installed only inside install-toolchain (pip == 1.10.0).
-    # Do not install again here (avoids two pips / PATH fights).
-    - name: Verify Meson 1.10.0
-      if: inputs.install-meson != 'false'
-      shell: bash
-      run: |
-        set -euo pipefail
-        echo "which meson: $(command -v meson || echo NONE)"
-        command -v meson >/dev/null
-        VER="$(meson --version | head -n1 | tr -d '\r')"
-        echo "meson version: $VER"
-        case "$VER" in
-          1.10.0*) ;;
-          *)
-            echo "Expected 1.10.0 (pip via install-toolchain), got: $VER"
-            exit 1
-            ;;
-        esac
-
     ###########################################################################
-    # 1a. PIN MESON 1.10.0 (Linux / macOS / Windows)
+    # 1a. PIN MESON 1.10.0 (single place — no duplicate install)
     ###########################################################################
-    # Newer Meson can pass invalid MSVC flag /release under /options:strict,
-    # breaking all link-time "Checking for function" tests (libvpx, x264, …).
     - name: Pin Meson 1.10.0
       if: inputs.install-meson != 'false'
       shell: bash
@@ -184,14 +177,9 @@ runs:
 
         echo "Using: $($PY -c 'import sys; print(sys.executable)')"
         $PY -m pip install --upgrade pip
-
-        # Drop any previous Meson install from this interpreter
         $PY -m pip uninstall -y meson 2>/dev/null || true
-
-        # Exact pin
         $PY -m pip install --force-reinstall --no-cache-dir 'meson==1.10.0'
 
-        # Prefer this interpreter's Scripts/bin on PATH for later steps
         SCRIPTS="$($PY -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
         if [ -n "$SCRIPTS" ] && [ -d "$SCRIPTS" ]; then
           echo "$SCRIPTS" >> "$GITHUB_PATH"
@@ -216,7 +204,7 @@ runs:
         esac
 
     ###########################################################################
-    # 1b. RESTORE COMPILER CACHE (canonical OS+toolchain keys)
+    # 1b. RESTORE COMPILER CACHE
     ###########################################################################
     - name: Restore ccache
       if: inputs.ccache-key != '' && (runner.os == 'Linux' || runner.os == 'macOS')
@@ -321,12 +309,33 @@ runs:
         CONFIGURE_OPTIONS: ${{ inputs.configure-options }}
       run: |
         set -euo pipefail
+
+        LAUNCHER_ARGS=()
+        if [ -n "${{ inputs.ccache-key }}" ] && command -v ccache >/dev/null 2>&1; then
+          if [ -z "${CCACHE_DIR:-}" ]; then
+            export CCACHE_DIR="${RUNNER_TEMP}/ccache"
+            echo "CCACHE_DIR=${CCACHE_DIR}" >> "$GITHUB_ENV"
+          fi
+          mkdir -p "${CCACHE_DIR}"
+          # Zero stats for this run; files already restored stay on disk
+          ccache -z || true
+          LAUNCHER_ARGS+=(
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          )
+          echo "Using ccache as compiler launcher (dir=${CCACHE_DIR})"
+          ccache -s || true
+        else
+          echo "ccache launcher disabled or ccache not installed"
+        fi
+
         # shellcheck disable=SC2086
         cmake -S . -B "${{ inputs.build-dir }}" \
           -G Ninja \
           -DCMAKE_BUILD_TYPE="${{ inputs.build-type }}" \
           -DCMAKE_C_COMPILER="${{ steps.toolchain.outputs.c_compiler }}" \
           -DCMAKE_CXX_COMPILER="${{ steps.toolchain.outputs.cxx_compiler }}" \
+          "${LAUNCHER_ARGS[@]}" \
           ${CONFIGURE_OPTIONS}
 
     - name: Configure CMake (Windows)
@@ -355,7 +364,7 @@ runs:
           $cmakeArgs.Add("-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded")
         }
 
-        if ($env:CMAKE_C_COMPILER_LAUNCHER) {
+        if ($env:CMAKE_C_COMPILER_LAUNCHER -or (Get-Command sccache -ErrorAction SilentlyContinue)) {
           Write-Host "Using sccache launcher"
           $cmakeArgs.Add("-DCMAKE_C_COMPILER_LAUNCHER=sccache")
           $cmakeArgs.Add("-DCMAKE_CXX_COMPILER_LAUNCHER=sccache")
@@ -461,6 +470,7 @@ runs:
         if [[ "${{ runner.os }}" == "Windows" ]]; then
           command -v sccache >/dev/null 2>&1 && sccache --show-stats || echo "sccache not found in PATH"
         else
+          echo "CCACHE_DIR=${CCACHE_DIR:-<unset>}"
           command -v ccache >/dev/null 2>&1 && ccache -s || echo "ccache not found in PATH"
         fi
         echo "=============================================="
