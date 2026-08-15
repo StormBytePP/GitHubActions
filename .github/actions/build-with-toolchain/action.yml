@@ -80,7 +80,7 @@ runs:
   steps:
 
     ###########################################################################
-    # 1. INSTALL TOOLCHAIN (restore only)
+    # 1. INSTALL TOOLCHAIN (restore cache only; save happens after build)
     ###########################################################################
     - name: Install toolchain
       id: toolchain
@@ -93,7 +93,70 @@ runs:
         install-meson: ${{ inputs.install-meson }}
 
     ###########################################################################
-    # 2. CONFIGURE (Linux / macOS)
+    # 1b. WINDOWS: drop GNU link.exe shadows (Git / Strawberry / MinGW)
+    #     Also needed for nested Meson/Ninja; Build itself must use pwsh, not bash
+    #     (Git Bash re-prepends Git\usr\bin and would undo this).
+    ###########################################################################
+    - name: Sanitize PATH for MSVC linker
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        $gnuPathFragments = @(
+          'Git\usr\bin',
+          'Git\mingw64\bin',
+          'Git\mingw32\bin',
+          'Strawberry\c\bin',
+          'Strawberry\c\x86_64-w64-mingw32',
+          'msys64\usr\bin',
+          'msys64\mingw64\bin',
+          'cygwin64\bin',
+          'mingw64\bin',
+          'mingw32\bin'
+        )
+
+        $parts = [System.Collections.Generic.List[string]]::new()
+        foreach ($p in ($env:Path -split ';')) {
+          if ([string]::IsNullOrWhiteSpace($p)) { continue }
+          $drop = $false
+          foreach ($frag in $gnuPathFragments) {
+            if ($p -like "*$frag*") {
+              Write-Host "PATH: removing GNU shadow: $p"
+              $drop = $true
+              break
+            }
+          }
+          if (-not $drop) { $parts.Add($p) }
+        }
+
+        $env:Path = ($parts -join ';')
+
+        $linkCmd = Get-Command link.exe -ErrorAction SilentlyContinue
+        if ($null -eq $linkCmd) {
+          Write-Error "link.exe not found after PATH sanitize (msvc-dev-cmd missing?)"
+          exit 1
+        }
+
+        $linkDir = Split-Path -Parent $linkCmd.Source
+        $env:Path = "$linkDir;$env:Path"
+
+        $linkDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        "PATH=$env:Path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+        Write-Host "Using linker: $($linkCmd.Source)"
+
+        # link.exe exits 1 with no inputs; probe via cmd so the step does not fail
+        $banner = cmd /c "link.exe 2>&1"
+        if ($banner -notmatch 'Microsoft') {
+          Write-Error "Expected MSVC link.exe, got non-Microsoft banner"
+          exit 1
+        }
+        Write-Host "MSVC linker OK"
+        exit 0
+
+    ###########################################################################
+    # 2. CONFIGURE
     ###########################################################################
     - name: Configure CMake (Linux/macOS)
       if: runner.os != 'Windows'
@@ -110,9 +173,6 @@ runs:
           -DCMAKE_CXX_COMPILER="${{ steps.toolchain.outputs.cxx_compiler }}" \
           ${CONFIGURE_OPTIONS}
 
-    ###########################################################################
-    # 3. CONFIGURE (Windows – sccache + optional Embedded debug)
-    ###########################################################################
     - name: Configure CMake (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
@@ -121,37 +181,35 @@ runs:
       run: |
         $ErrorActionPreference = "Stop"
 
-        $extra = $env:CONFIGURE_OPTIONS
-        $embedded = "${{ inputs.msvc-embedded-debug }}"
-
-        $args = [System.Collections.Generic.List[string]]::new()
-        $args.AddRange(@(
+        $cmakeArgs = [System.Collections.Generic.List[string]]::new()
+        foreach ($a in @(
           "-S", ".",
           "-B", "${{ inputs.build-dir }}",
           "-G", "Ninja",
           "-DCMAKE_BUILD_TYPE=${{ inputs.build-type }}",
           "-DCMAKE_C_COMPILER=cl",
           "-DCMAKE_CXX_COMPILER=cl"
-        ))
-
-        if ($embedded -eq "true") {
-          Write-Host "msvc-embedded-debug: CMP0141=NEW + Embedded (/Z7)"
-          $args.Add("-DCMAKE_POLICY_DEFAULT_CMP0141=NEW")
-          $args.Add("-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded")
+        )) {
+          $cmakeArgs.Add($a)
         }
 
-        if ($env:CMAKE_C_COMPILER_LAUNCHER -and $env:CMAKE_C_COMPILER_LAUNCHER -ne "") {
-          Write-Host "Using sccache from PATH (launcher enabled)"
-          $args.Add("-DCMAKE_C_COMPILER_LAUNCHER=sccache")
-          $args.Add("-DCMAKE_CXX_COMPILER_LAUNCHER=sccache")
+        if ("${{ inputs.msvc-embedded-debug }}" -eq "true") {
+          Write-Host "msvc-embedded-debug: CMP0141=NEW + Embedded (/Z7)"
+          $cmakeArgs.Add("-DCMAKE_POLICY_DEFAULT_CMP0141=NEW")
+          $cmakeArgs.Add("-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded")
+        }
+
+        if ($env:CMAKE_C_COMPILER_LAUNCHER) {
+          Write-Host "Using sccache launcher"
+          $cmakeArgs.Add("-DCMAKE_C_COMPILER_LAUNCHER=sccache")
+          $cmakeArgs.Add("-DCMAKE_CXX_COMPILER_LAUNCHER=sccache")
         } else {
           Write-Host "WARNING: sccache not configured – caching disabled"
         }
 
-        # Parse extra options: keep "quoted strings" as a single argument
+        $extra = $env:CONFIGURE_OPTIONS
         if ($extra -and $extra.Trim() -ne "") {
-          $matches = [regex]::Matches($extra, '("([^"]*)"|''([^'']*)''|\S+)')
-          foreach ($m in $matches) {
+          foreach ($m in [regex]::Matches($extra, '("([^"]*)"|''([^'']*)''|\S+)')) {
             $t = $m.Value
             if ($t.Length -ge 2 -and (
                 ($t.StartsWith('"') -and $t.EndsWith('"')) -or
@@ -159,20 +217,33 @@ runs:
               )) {
               $t = $t.Substring(1, $t.Length - 2)
             }
-            if ($t -ne "") {
-              $args.Add($t)
-            }
+            if ($t -ne "") { $cmakeArgs.Add($t) }
           }
         }
 
-        Write-Host "Running: cmake $($args -join ' ')"
-        & cmake @($args.ToArray())
+        Write-Host "Running: cmake $($cmakeArgs -join ' ')"
+        & cmake @($cmakeArgs.ToArray())
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     ###########################################################################
-    # 4. BUILD
+    # 3. BUILD
+    #    Windows MUST use pwsh/cmd — Git Bash prepends Git\usr\bin (GNU link.exe)
     ###########################################################################
-    - name: Build
+    - name: Build (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        $target = "${{ inputs.target }}"
+        if ($target -ne "") {
+          cmake --build "${{ inputs.build-dir }}" --target $target --parallel
+        } else {
+          cmake --build "${{ inputs.build-dir }}" --parallel
+        }
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Build (Linux/macOS)
+      if: runner.os != 'Windows'
       shell: bash
       run: |
         set -euo pipefail
@@ -183,7 +254,7 @@ runs:
         fi
 
     ###########################################################################
-    # 5. CACHE STATS
+    # 4. CACHE STATS
     ###########################################################################
     - name: Compiler cache stats
       if: always() && inputs.ccache-key != ''
@@ -193,28 +264,33 @@ runs:
         echo "=============================================="
         echo " COMPILER CACHE STATISTICS"
         echo "=============================================="
-
         if [[ "${{ runner.os }}" == "Windows" ]]; then
-          if command -v sccache >/dev/null 2>&1; then
-            sccache --show-stats || true
-          else
-            echo "sccache not found in PATH"
-          fi
+          command -v sccache >/dev/null 2>&1 && sccache --show-stats || echo "sccache not found in PATH"
         else
-          if command -v ccache >/dev/null 2>&1; then
-            ccache -s || true
-          else
-            echo "ccache not found in PATH"
-          fi
+          command -v ccache >/dev/null 2>&1 && ccache -s || echo "ccache not found in PATH"
         fi
-
         echo "=============================================="
 
     ###########################################################################
-    # 6. TESTS (optional)
+    # 5. TESTS (optional)
     ###########################################################################
-    - name: Run tests
-      if: inputs.run-tests == 'true'
+    - name: Run tests (Windows)
+      if: inputs.run-tests == 'true' && runner.os == 'Windows'
+      shell: pwsh
+      env:
+        CTEST_OPTIONS: ${{ inputs.ctest-options }}
+      run: |
+        $ErrorActionPreference = "Stop"
+        $opts = $env:CTEST_OPTIONS
+        if ($opts) {
+          ctest --test-dir "${{ inputs.build-dir }}" $opts.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
+        } else {
+          ctest --test-dir "${{ inputs.build-dir }}" --output-on-failure
+        }
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Run tests (Linux/macOS)
+      if: inputs.run-tests == 'true' && runner.os != 'Windows'
       shell: bash
       env:
         CTEST_OPTIONS: ${{ inputs.ctest-options }}
@@ -224,7 +300,7 @@ runs:
         ctest --test-dir "${{ inputs.build-dir }}" ${CTEST_OPTIONS}
 
     ###########################################################################
-    # 7. SAVE COMPILER CACHE
+    # 6. SAVE COMPILER CACHE
     ###########################################################################
     - name: Save ccache
       if: success() && (runner.os == 'Linux' || runner.os == 'macOS') && inputs.ccache-key != ''
