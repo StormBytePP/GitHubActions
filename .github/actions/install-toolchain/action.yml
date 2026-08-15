@@ -143,20 +143,57 @@ runs:
         fi
 
     ###########################################################################
-    # 3. MESON (optional)
+    # 3. MESON (pip only — never Chocolatey; pin 1.10.2 for MSVC has_function)
     ###########################################################################
-    - name: Setup Python + Meson
+    # See: https://github.com/mesonbuild/meson/issues/16086
+    - name: Setup Python
       if: inputs.install-meson == 'true'
       uses: actions/setup-python@v5
       with:
         python-version: "3.x"
 
-    - name: Install Meson 1.10.2
+    - name: Install Meson 1.10.2 (pip only)
       if: inputs.install-meson == 'true'
       shell: bash
       run: |
-        pip install --quiet meson==1.10.2
-        meson --version
+        set -euo pipefail
+
+        PY=""
+        for c in python3 python; do
+          if command -v "$c" >/dev/null 2>&1; then
+            PY="$c"
+            break
+          fi
+        done
+        if [ -z "$PY" ]; then
+          echo "python not found after setup-python"
+          exit 1
+        fi
+
+        echo "Python: $($PY -c 'import sys; print(sys.executable)')"
+        $PY -m pip install --upgrade pip
+        $PY -m pip uninstall -y meson 2>/dev/null || true
+        $PY -m pip install --force-reinstall --no-cache-dir 'meson==1.10.2'
+
+        SCRIPTS="$($PY -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
+        if [ -n "$SCRIPTS" ] && [ -d "$SCRIPTS" ]; then
+          # GITHUB_PATH entries are prepended for later steps
+          echo "$SCRIPTS" >> "$GITHUB_PATH"
+          export PATH="$SCRIPTS:$PATH"
+        fi
+
+        # If a stray meson exists elsewhere, prefer: python -m mesonbuild.mesonmain
+        VER="$(meson --version 2>/dev/null | head -n1 | tr -d '\r' || true)"
+        echo "meson on PATH: $(command -v meson || echo none)"
+        echo "meson --version: ${VER:-unknown}"
+
+        case "$VER" in
+          1.10.2*) ;;
+          *)
+            echo "Expected Meson 1.10.2 from pip, got: ${VER:-missing}"
+            exit 1
+            ;;
+        esac
 
     ###########################################################################
     # 4. CCACHE (Linux + macOS)

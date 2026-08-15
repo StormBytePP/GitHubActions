@@ -140,6 +140,25 @@ runs:
         docs: ${{ inputs.docs }}
         install-meson: ${{ inputs.install-meson }}
 
+    # Meson is installed only inside install-toolchain (pip == 1.10.2).
+    # Do not install again here (avoids two pips / PATH fights).
+    - name: Verify Meson 1.10.2
+      if: inputs.install-meson != 'false'
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "which meson: $(command -v meson || echo NONE)"
+        command -v meson >/dev/null
+        VER="$(meson --version | head -n1 | tr -d '\r')"
+        echo "meson version: $VER"
+        case "$VER" in
+          1.10.2*) ;;
+          *)
+            echo "Expected 1.10.2 (pip via install-toolchain), got: $VER"
+            exit 1
+            ;;
+        esac
+
     ###########################################################################
     # 1a. PIN MESON 1.10.2 (Linux / macOS / Windows)
     ###########################################################################
