@@ -28,90 +28,103 @@ runs:
   steps:
 
     ###########################################################################
-    # 0. COMPUTE DETERMINISTIC HASH (ONLY IF unique == false)
+    # 0. COMPUTE DETERMINISTIC HASH + CACHE_DIR (ONLY IF CACHING)
     ###########################################################################
-    - name: Compute APT cache key hash
-      if: ${{ inputs.cache-key != '' && inputs.unique == 'false' }}
-      id: aptkey
-      shell: bash
-      run: |
-        echo "[STEP 0] Computing deterministic cache key hash..."
-        HASH=$(echo '${{ inputs.packages }}' | sha256sum | cut -c1-16)
-        echo "PACKAGES_HASH=$HASH" >> "$GITHUB_ENV"
-
-    ###########################################################################
-    # 1. CREATE CACHE DIRECTORY (UNIQUE OR HASHED)
-    ###########################################################################
-    - name: Create APT cache directory
+    - name: Prepare APT cache key and directory
       if: ${{ inputs.cache-key != '' }}
+      id: prep
       shell: bash
       run: |
+        set -euo pipefail
+        echo "[STEP 0] Preparing cache key and directory..."
+
+        # Normalize packages (alphabetical order + collapse spaces)
+        PACKAGES_NORMALIZED=$(echo "${{ inputs.packages }}" | tr -s ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ *$//')
+
         if [ "${{ inputs.unique }}" = "true" ]; then
-          # Unique mode: user guarantees the key is globally unique
+          CACHE_KEY="${{ inputs.cache-key }}"
           CACHE_DIR="$HOME/apt-cache-${{ inputs.cache-key }}"
-          echo "[STEP 1] Creating cache directory (unique mode): $CACHE_DIR"
         else
-          # Deterministic mode: append hash suffix
-          CACHE_DIR="$HOME/apt-cache-${{ inputs.cache-key }}-${PACKAGES_HASH}"
-          echo "[STEP 1] Creating cache directory (hashed mode): $CACHE_DIR"
+          HASH=$(echo -n "$PACKAGES_NORMALIZED" | sha256sum | cut -c1-16)
+          CACHE_KEY="${{ inputs.cache-key }}-${HASH}"
+          CACHE_DIR="$HOME/apt-cache-${{ inputs.cache-key }}-${HASH}"
         fi
 
+        echo "CACHE_KEY=$CACHE_KEY" >> "$GITHUB_ENV"
         echo "CACHE_DIR=$CACHE_DIR" >> "$GITHUB_ENV"
+        echo "PACKAGES_NORMALIZED=$PACKAGES_NORMALIZED" >> "$GITHUB_ENV"
+
         mkdir -p "$CACHE_DIR"
+        echo "Using cache key: $CACHE_KEY"
+        echo "Cache directory: $CACHE_DIR"
 
     ###########################################################################
-    # 2. RESTORE CACHE
+    # 1. RESTORE CACHE
     ###########################################################################
     - name: Restore APT cache
       if: ${{ inputs.cache-key != '' }}
       id: restore
-      uses: actions/cache@v4
+      uses: actions/cache/restore@v4
       with:
         path: ${{ env.CACHE_DIR }}
-        key: ${{ inputs.unique == 'true'
-                && inputs.cache-key
-                || format('{0}-{1}', inputs.cache-key, env.PACKAGES_HASH) }}
+        key: ${{ env.CACHE_KEY }}
+        # Optional: more generic restore-keys for partial hits
+        # restore-keys: |
+        #   ${{ inputs.cache-key }}-
 
     ###########################################################################
-    # 3. COPY RESTORED CACHE BACK INTO SYSTEM APT CACHE
+    # 2. COPY RESTORED .deb FILES INTO SYSTEM APT CACHE (ONLY IF CACHING)
     ###########################################################################
     - name: Restore cached .deb files into system APT cache
+      if: ${{ inputs.cache-key != '' }}
       shell: bash
       run: |
-        echo "[STEP 3] Copying restored .deb files into /var/cache/apt/archives..."
+        echo "[STEP 2] Copying restored .deb files into /var/cache/apt/archives..."
         sudo mkdir -p /var/cache/apt/archives
-        sudo cp "${CACHE_DIR}"/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+        # Only copy if files exist
+        if compgen -G "${CACHE_DIR}/*.deb" > /dev/null; then
+          sudo cp -n "${CACHE_DIR}"/*.deb /var/cache/apt/archives/ || true
+        fi
 
     ###########################################################################
-    # 4. DOWNLOAD PACKAGES AND DEPENDENCIES (NO INSTALL)
+    # 3. DOWNLOAD (only missing packages) + COPY NEW .deb FILES TO CACHE
     ###########################################################################
     - name: Download APT packages (dependencies included)
       shell: bash
       run: |
-        echo "[STEP 4] Downloading packages and dependencies (no install)..."
-        sudo apt-get update
+        set -euo pipefail
+        echo "[STEP 3] Updating package lists and downloading missing packages..."
+
+        sudo apt-get update -qq
+
+        # --download-only only downloads what is not already in /var/cache/apt/archives
         sudo apt-get install --download-only -y ${{ inputs.packages }}
 
-        echo "[STEP 4] Copying newly downloaded .deb files into cache directory..."
-        cp /var/cache/apt/archives/*.deb "${CACHE_DIR}/" 2>/dev/null || true
+        # If caching is enabled, copy only the new .deb files into the cache directory
+        if [ -n "${CACHE_DIR:-}" ]; then
+          echo "[STEP 3] Copying newly downloaded .deb files into cache directory..."
+          # Use -n to avoid overwriting (faster) + nullglob
+          shopt -s nullglob
+          cp -n /var/cache/apt/archives/*.deb "${CACHE_DIR}/" 2>/dev/null || true
+          shopt -u nullglob
+        fi
 
     ###########################################################################
-    # 5. INSTALL PACKAGES USING LOCAL .deb FILES
+    # 4. INSTALL PACKAGES
     ###########################################################################
     - name: Install APT packages
       shell: bash
       run: |
-        echo "[STEP 5] Installing packages using local .deb files..."
+        echo "[STEP 4] Installing packages..."
+        # Prefer local .deb files (whether from cache or just downloaded)
         sudo apt-get install -y ${{ inputs.packages }}
 
     ###########################################################################
-    # 6. SAVE CACHE (ONLY IF NOT RESTORED)
+    # 5. SAVE CACHE (ONLY IF NO CACHE HIT)
     ###########################################################################
     - name: Save APT cache
       if: ${{ inputs.cache-key != '' && steps.restore.outputs.cache-hit != 'true' }}
-      uses: actions/cache@v4
+      uses: actions/cache/save@v4
       with:
         path: ${{ env.CACHE_DIR }}
-        key: ${{ inputs.unique == 'true'
-                && inputs.cache-key
-                || format('{0}-{1}', inputs.cache-key, env.PACKAGES_HASH) }}
+        key: ${{ env.CACHE_KEY }}

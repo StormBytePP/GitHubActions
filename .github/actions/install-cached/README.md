@@ -1,48 +1,41 @@
 # Cache and Install APT Packages
 
-Description
------------
-Composite action that installs and caches APT packages on Linux runners to speed up repeated installations. On Windows it installs packages via Chocolatey.
+Composite GitHub Action that installs system packages and caches them for faster subsequent runs.
 
-Author
-------
-David C. Manuelda <StormByte@gmail.com>
+- **Linux**: Installs APT packages and caches the downloaded `.deb` files deterministically.
+- **Windows**: Installs packages via Chocolatey (no caching currently).
 
-Branding
---------
-Icon: hard-drive
-Color: green
+## Author
 
-Inputs
-------
-- `packages` (required) — Space-separated list of packages to install. On Linux these are APT packages; on Windows these are Chocolatey packages.
-- `cache-key` (optional) — Unique cache key. Change this to invalidate the cache and force a fresh install.
+David C. Manuelda  
+[StormByte@gmail.com](mailto:StormByte@gmail.com)
 
-Behavior
---------
-- Linux: uses `awalsh128/cache-apt-pkgs-action@v1` to install and cache APT packages.
-- Windows: runs `choco install <packages> -y` using PowerShell.
+## Branding
 
-Usage
------
-Reference the action by repository:
+| Property | Value       |
+|----------|-------------|
+| Icon     | `hard-drive` |
+| Color    | `green`     |
 
-```yaml
-uses: stormbytepp/githubactions/.github/actions/install-cached@master
-with:
-  packages: 'build-essential clang-20 cmake'
-  cache-key: 'toolchain-clang-20'
-```
+## Inputs
 
-Publishing Tips
----------------
-- Include this README and clear examples for both Linux and Windows.
-- Explain any package name differences between distributions or Chocolatey equivalents.
+| Name        | Required | Default | Description |
+|-------------|----------|---------|-------------|
+| `packages`  | Yes      | —       | Space-separated list of packages to install.<br>• Linux → APT packages<br>• Windows → Chocolatey packages |
+| `cache-key` | No       | `""`    | Prefix for the cache key. If empty, caching is disabled on Linux.<br>Change this value to force a cache miss and perform a fresh download. |
+| `unique`    | No       | `"true"`| If `true`, the provided `cache-key` is treated as globally unique (no hash suffix is added).<br>If `false`, a deterministic 16-character hash of the package list is appended to avoid collisions when the same prefix is reused with different package sets. |
 
-External actions used
----------------------
-- `awalsh128/cache-apt-pkgs-action@v1` (Linux APT caching)
+## Behavior
 
-License
--------
-This repository is licensed under the MIT License — see `LICENSE.txt` at the repository root.
+### Linux
+1. Computes a deterministic cache key (optionally with a package-list hash).
+2. Restores previously cached `.deb` files (if any).
+3. Copies restored `.deb` files into the system APT cache (`/var/cache/apt/archives`).
+4. Runs `apt-get update` and downloads any missing packages + dependencies (`--download-only`).
+5. Installs the requested packages using the local `.deb` files whenever possible.
+6. Saves the updated cache only on a cache miss.
+
+### Windows
+Simply runs:
+```powershell
+choco install <packages> -y
