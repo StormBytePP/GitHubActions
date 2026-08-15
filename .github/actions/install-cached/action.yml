@@ -1,5 +1,9 @@
-name: Cache and Install APT Packages
-description: Caches APT packages deterministically to avoid collisions.
+name: Cache and Install Packages
+description: >
+  Installs packages with caching support.
+  - Linux: APT (with deterministic .deb caching)
+  - Windows: Chocolatey
+  - macOS: Homebrew
 author: David C. Manuelda
 branding:
   icon: 'hard-drive'
@@ -7,11 +11,11 @@ branding:
 
 inputs:
   packages:
-    description: "Space-separated list of APT packages to install."
+    description: "Space-separated list of packages to install"
     required: true
 
   cache-key:
-    description: "Prefix for the cache key. If empty, caching is disabled."
+    description: "Prefix for the cache key (Linux only). If empty, caching is disabled."
     required: false
     default: ""
 
@@ -20,6 +24,7 @@ inputs:
       If true (default), the cache-key is assumed to be globally unique and
       no hash suffix will be added. If false, a deterministic hash based on
       the package list will be appended to avoid collisions.
+      (Only used on Linux)
     required: false
     default: "true"
 
@@ -28,17 +33,37 @@ runs:
   steps:
 
     ###########################################################################
-    # 0. COMPUTE DETERMINISTIC HASH + CACHE_DIR (ONLY IF CACHING)
+    # WINDOWS → Chocolatey
     ###########################################################################
+    - name: Install packages with Chocolatey (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        Write-Host "Installing packages with Chocolatey: ${{ inputs.packages }}"
+        choco install ${{ inputs.packages }} -y
+
+    ###########################################################################
+    # macOS → Homebrew
+    ###########################################################################
+    - name: Install packages with Homebrew (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        echo "Installing packages with Homebrew: ${{ inputs.packages }}"
+        brew install ${{ inputs.packages }}
+
+    ###########################################################################
+    # LINUX → APT (con cache completo)
+    ###########################################################################
+
     - name: Prepare APT cache key and directory
-      if: ${{ inputs.cache-key != '' }}
+      if: runner.os == 'Linux' && inputs.cache-key != ''
       id: prep
       shell: bash
       run: |
         set -euo pipefail
         echo "[STEP 0] Preparing cache key and directory..."
 
-        # Normalize packages (alphabetical order + collapse spaces)
         PACKAGES_NORMALIZED=$(echo "${{ inputs.packages }}" | tr -s ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ *$//')
 
         if [ "${{ inputs.unique }}" = "true" ]; then
@@ -52,78 +77,54 @@ runs:
 
         echo "CACHE_KEY=$CACHE_KEY" >> "$GITHUB_ENV"
         echo "CACHE_DIR=$CACHE_DIR" >> "$GITHUB_ENV"
-        echo "PACKAGES_NORMALIZED=$PACKAGES_NORMALIZED" >> "$GITHUB_ENV"
 
         mkdir -p "$CACHE_DIR"
         echo "Using cache key: $CACHE_KEY"
         echo "Cache directory: $CACHE_DIR"
 
-    ###########################################################################
-    # 1. RESTORE CACHE
-    ###########################################################################
     - name: Restore APT cache
-      if: ${{ inputs.cache-key != '' }}
+      if: runner.os == 'Linux' && inputs.cache-key != ''
       id: restore
       uses: actions/cache/restore@v4
       with:
         path: ${{ env.CACHE_DIR }}
         key: ${{ env.CACHE_KEY }}
-        # Optional: more generic restore-keys for partial hits
-        # restore-keys: |
-        #   ${{ inputs.cache-key }}-
 
-    ###########################################################################
-    # 2. COPY RESTORED .deb FILES INTO SYSTEM APT CACHE (ONLY IF CACHING)
-    ###########################################################################
     - name: Restore cached .deb files into system APT cache
-      if: ${{ inputs.cache-key != '' }}
+      if: runner.os == 'Linux' && inputs.cache-key != ''
       shell: bash
       run: |
         echo "[STEP 2] Copying restored .deb files into /var/cache/apt/archives..."
         sudo mkdir -p /var/cache/apt/archives
-        # Only copy if files exist
         if compgen -G "${CACHE_DIR}/*.deb" > /dev/null; then
           sudo cp -n "${CACHE_DIR}"/*.deb /var/cache/apt/archives/ || true
         fi
 
-    ###########################################################################
-    # 3. DOWNLOAD (only missing packages) + COPY NEW .deb FILES TO CACHE
-    ###########################################################################
-    - name: Download APT packages (dependencies included)
+    - name: Download APT packages
+      if: runner.os == 'Linux'
       shell: bash
       run: |
         set -euo pipefail
         echo "[STEP 3] Updating package lists and downloading missing packages..."
-
         sudo apt-get update -qq
-
-        # --download-only only downloads what is not already in /var/cache/apt/archives
         sudo apt-get install --download-only -y ${{ inputs.packages }}
 
-        # If caching is enabled, copy only the new .deb files into the cache directory
         if [ -n "${CACHE_DIR:-}" ]; then
-          echo "[STEP 3] Copying newly downloaded .deb files into cache directory..."
-          # Use -n to avoid overwriting (faster) + nullglob
+          echo "Copying newly downloaded .deb files into cache directory..."
           shopt -s nullglob
           cp -n /var/cache/apt/archives/*.deb "${CACHE_DIR}/" 2>/dev/null || true
           shopt -u nullglob
         fi
 
-    ###########################################################################
-    # 4. INSTALL PACKAGES
-    ###########################################################################
     - name: Install APT packages
+      if: runner.os == 'Linux'
       shell: bash
       run: |
         echo "[STEP 4] Installing packages..."
-        # Prefer local .deb files (whether from cache or just downloaded)
         sudo apt-get install -y ${{ inputs.packages }}
 
-    ###########################################################################
-    # 5. SAVE CACHE (ONLY IF NO CACHE HIT)
-    ###########################################################################
     - name: Save APT cache
-      if: ${{ inputs.cache-key != '' && steps.restore.outputs.cache-hit != 'true' }}
+      if: runner.os == 'Linux' && inputs.cache-key != '' && steps.restore.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CACHE_DIR }}

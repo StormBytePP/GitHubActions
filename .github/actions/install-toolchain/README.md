@@ -4,12 +4,14 @@ Composite GitHub Action that installs, configures and (optionally) caches compil
 
 **Supported toolchains**
 - **Linux**: `gcc`, `clang`, `clang-libc++`
+- **macOS**: `gcc`, `clang`, `clang-libc++`
 - **Windows**: `msvc`
 
 The action also:
 - Registers the selected compilers with `update-alternatives` on Linux
-- Optionally installs and configures **ccache** (Linux) / **BuildCache** (Windows)
-- Optionally installs documentation tools (Doxygen + Graphviz)
+- Installs toolchains via Homebrew on macOS
+- Optionally installs and configures **ccache** (Linux & macOS) / **BuildCache** (Windows)
+- Optionally installs documentation tools (Doxygen + Graphviz) on Linux & macOS
 - Optionally installs Meson
 - Exports the chosen compilers as both **outputs** and environment variables (`CC` / `CXX`)
 
@@ -29,10 +31,10 @@ David C. Manuelda
 
 | Name            | Required | Default | Description |
 |-----------------|----------|---------|-------------|
-| `toolchain`     | **Yes**  | —       | Toolchain to install.<br>Allowed values: `gcc`, `clang`, `clang-libc++` (Linux) or `msvc` (Windows). |
+| `toolchain`     | **Yes**  | —       | Toolchain to install.<br>Allowed values: `gcc`, `clang`, `clang-libc++` (Linux/macOS) or `msvc` (Windows). |
 | `version`       | No       | `""`    | Major version for `gcc` or `clang`.<br>Defaults: **14** (gcc) / **20** (clang). |
-| `docs`          | No       | `false` | Install documentation tools (`doxygen` + `graphviz`) on Linux. |
-| `ccache-key`    | No       | `""`    | Base cache key for **ccache** (Linux) or **BuildCache** (Windows).<br>Leave empty to disable compiler caching. |
+| `docs`          | No       | `false` | Install documentation tools (`doxygen` + `graphviz`) on Linux and macOS. |
+| `ccache-key`    | No       | `""`    | Base cache key for **ccache** (Linux/macOS) or **BuildCache** (Windows).<br>Leave empty to disable compiler caching. |
 | `install-meson` | No       | `true`  | Install Meson 1.10.2 via `pip`. |
 
 ## Outputs
@@ -58,6 +60,17 @@ David C. Manuelda
 4. Configures ccache (size limit 2 GB) and restores/saves the cache.
 5. Optionally installs Meson.
 
+### macOS
+1. Resolves the requested compiler version (or uses defaults).
+2. Installs via Homebrew:
+   - `ninja`, `cmake`
+   - The selected toolchain (`gcc@X` or `llvm`)
+   - `ccache` (if `ccache-key` is provided)
+   - Documentation tools (if `docs: true`)
+3. Adds the compiler binaries to `PATH`.
+4. Configures ccache and restores/saves the cache.
+5. Optionally installs Meson.
+
 ### Windows
 1. Validates that `toolchain` is `msvc`.
 2. Sets up the MSVC environment with `ilammy/msvc-dev-cmd`.
@@ -71,7 +84,7 @@ David C. Manuelda
 
 ## Usage examples
 
-### Basic GCC
+### Basic GCC (Linux / macOS)
 
 ```yaml
 - name: Setup GCC toolchain
@@ -115,14 +128,15 @@ David C. Manuelda
 
 ## Notes
 
-- The APT packages are installed through the companion action `install-cached`, which provides deterministic caching of `.deb` files.
-- Compiler cache keys are automatically namespaced with the toolchain and version.
+- On Linux the APT packages are installed through the companion action `install-cached`, which provides deterministic caching of `.deb` files.
+- On macOS packages are installed with Homebrew.
+- Compiler cache keys are automatically namespaced with the OS, toolchain and version.
 - A new cache entry is created on every successful run (using `github.run_id`) so the cache is always updated without needing to delete previous entries.
 - Meson installation can be disabled with `install-meson: false` if you don’t need it.
 
 ## External actions used
 
-- `stormbytepp/githubactions/.github/actions/install-cached` (APT package caching)
+- `stormbytepp/githubactions/.github/actions/install-cached` (APT package caching on Linux)
 - `actions/setup-python@v5`
 - `actions/cache/restore@v4` & `actions/cache/save@v4`
 - `ilammy/msvc-dev-cmd@v1`
