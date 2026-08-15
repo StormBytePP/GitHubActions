@@ -60,7 +60,7 @@ inputs:
 
   install-meson:
     description: >
-      Install/pin Meson 1.10.2 via pip (required for FFmpeg/libvpx MSVC
+      Install/pin Meson 1.10.0 via pip (required for FFmpeg/libvpx MSVC
       link tests; newer Meson can inject invalid /release for cl).
     required: false
     default: "true"
@@ -140,9 +140,9 @@ runs:
         docs: ${{ inputs.docs }}
         install-meson: ${{ inputs.install-meson }}
 
-    # Meson is installed only inside install-toolchain (pip == 1.10.2).
+    # Meson is installed only inside install-toolchain (pip == 1.10.0).
     # Do not install again here (avoids two pips / PATH fights).
-    - name: Verify Meson 1.10.2
+    - name: Verify Meson 1.10.0
       if: inputs.install-meson != 'false'
       shell: bash
       run: |
@@ -152,19 +152,19 @@ runs:
         VER="$(meson --version | head -n1 | tr -d '\r')"
         echo "meson version: $VER"
         case "$VER" in
-          1.10.2*) ;;
+          1.10.0*) ;;
           *)
-            echo "Expected 1.10.2 (pip via install-toolchain), got: $VER"
+            echo "Expected 1.10.0 (pip via install-toolchain), got: $VER"
             exit 1
             ;;
         esac
 
     ###########################################################################
-    # 1a. PIN MESON 1.10.2 (Linux / macOS / Windows)
+    # 1a. PIN MESON 1.10.0 (Linux / macOS / Windows)
     ###########################################################################
     # Newer Meson can pass invalid MSVC flag /release under /options:strict,
     # breaking all link-time "Checking for function" tests (libvpx, x264, …).
-    - name: Pin Meson 1.10.2
+    - name: Pin Meson 1.10.0
       if: inputs.install-meson != 'false'
       shell: bash
       run: |
@@ -189,7 +189,7 @@ runs:
         $PY -m pip uninstall -y meson 2>/dev/null || true
 
         # Exact pin
-        $PY -m pip install --force-reinstall --no-cache-dir 'meson==1.10.2'
+        $PY -m pip install --force-reinstall --no-cache-dir 'meson==1.10.0'
 
         # Prefer this interpreter's Scripts/bin on PATH for later steps
         SCRIPTS="$($PY -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
@@ -208,9 +208,9 @@ runs:
         echo "meson at: $MESON_BIN"
         echo "meson version: $VER"
         case "$VER" in
-          1.10.2*) ;;
+          1.10.0*) ;;
           *)
-            echo "Expected Meson 1.10.2, got: $VER"
+            echo "Expected Meson 1.10.0, got: $VER"
             exit 1
             ;;
         esac

@@ -19,7 +19,7 @@ inputs:
     description: "Base cache key for ccache (Linux/macOS) / sccache (Windows). Empty = disabled"
     default: ""
   install-meson:
-    description: "Install Meson 1.10.2 via pip (default: true)"
+    description: "Install Meson 1.10.0 via pip (default: true)"
     default: "true"
 
 outputs:
@@ -143,7 +143,7 @@ runs:
         fi
 
     ###########################################################################
-    # 3. MESON (pip only — never Chocolatey; pin 1.10.2 for MSVC has_function)
+    # 3. MESON (pip only — never Chocolatey; pin 1.10.0 for MSVC has_function)
     ###########################################################################
     # See: https://github.com/mesonbuild/meson/issues/16086
     - name: Setup Python
@@ -152,7 +152,7 @@ runs:
       with:
         python-version: "3.x"
 
-    - name: Install Meson 1.10.2 (pip only)
+    - name: Install Meson 1.10.0 (pip only)
       if: inputs.install-meson == 'true'
       shell: bash
       run: |
@@ -173,7 +173,7 @@ runs:
         echo "Python: $($PY -c 'import sys; print(sys.executable)')"
         $PY -m pip install --upgrade pip
         $PY -m pip uninstall -y meson 2>/dev/null || true
-        $PY -m pip install --force-reinstall --no-cache-dir 'meson==1.10.2'
+        $PY -m pip install --force-reinstall --no-cache-dir 'meson==1.10.0'
 
         SCRIPTS="$($PY -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
         if [ -n "$SCRIPTS" ] && [ -d "$SCRIPTS" ]; then
@@ -188,9 +188,9 @@ runs:
         echo "meson --version: ${VER:-unknown}"
 
         case "$VER" in
-          1.10.2*) ;;
+          1.10.0*) ;;
           *)
-            echo "Expected Meson 1.10.2 from pip, got: ${VER:-missing}"
+            echo "Expected Meson 1.10.0 from pip, got: ${VER:-missing}"
             exit 1
             ;;
         esac
