@@ -1,0 +1,219 @@
+name: "Build with Toolchain"
+description: "Install compiler toolchain, build with CMake/Ninja and save compiler cache"
+author: "David C. Manuelda"
+branding:
+  icon: "package"
+  color: "blue"
+
+inputs:
+  toolchain:
+    description: "gcc, clang, clang-libc++, or msvc"
+    required: true
+
+  ccache-key:
+    description: "Base cache key for ccache/sccache. Empty = disabled"
+    required: false
+    default: ""
+
+  build-dir:
+    description: "CMake build directory"
+    required: false
+    default: "build"
+
+  build-type:
+    description: "CMake build type"
+    required: false
+    default: "Debug"
+
+  configure-options:
+    description: "Extra CMake configure options"
+    required: false
+    default: ""
+
+  target:
+    description: "Optional CMake target to build (empty = all)"
+    required: false
+    default: ""
+
+  run-tests:
+    description: "Run ctest after build"
+    required: false
+    default: "false"
+
+  ctest-options:
+    description: "Extra options for ctest"
+    required: false
+    default: "--output-on-failure"
+
+  version:
+    description: "Optional major version for gcc/clang"
+    required: false
+    default: ""
+
+  docs:
+    description: "Install documentation tools"
+    required: false
+    default: "false"
+
+  install-meson:
+    description: "Install Meson"
+    required: false
+    default: "true"
+
+  msvc-embedded-debug:
+    description: >
+      Windows only. If true (default), pass
+      -DCMAKE_POLICY_DEFAULT_CMP0141=NEW and
+      -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded so MSVC uses /Z7
+      instead of /Zi (avoids PDB races under parallel sccache).
+    required: false
+    default: "true"
+
+outputs:
+  c_compiler:
+    value: ${{ steps.toolchain.outputs.c_compiler }}
+  cxx_compiler:
+    value: ${{ steps.toolchain.outputs.cxx_compiler }}
+
+runs:
+  using: "composite"
+  steps:
+
+    ###########################################################################
+    # 1. INSTALL TOOLCHAIN (restore only)
+    ###########################################################################
+    - name: Install toolchain
+      id: toolchain
+      uses: stormbytepp/githubactions/.github/actions/install-toolchain@master
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        ccache-key: ${{ inputs.ccache-key }}
+        version: ${{ inputs.version }}
+        docs: ${{ inputs.docs }}
+        install-meson: ${{ inputs.install-meson }}
+
+    ###########################################################################
+    # 2. CONFIGURE (Linux / macOS)
+    ###########################################################################
+    - name: Configure CMake (Linux/macOS)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+        cmake -S . -B "${{ inputs.build-dir }}" \
+          -G Ninja \
+          -DCMAKE_BUILD_TYPE="${{ inputs.build-type }}" \
+          -DCMAKE_C_COMPILER="${{ steps.toolchain.outputs.c_compiler }}" \
+          -DCMAKE_CXX_COMPILER="${{ steps.toolchain.outputs.cxx_compiler }}" \
+          ${{ inputs.configure-options }}
+
+    ###########################################################################
+    # 3. CONFIGURE (Windows – sccache + optional Embedded debug)
+    ###########################################################################
+    - name: Configure CMake (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        $extra = "${{ inputs.configure-options }}"
+        $embedded = "${{ inputs.msvc-embedded-debug }}"
+
+        $args = @(
+          "-S", ".",
+          "-B", "${{ inputs.build-dir }}",
+          "-G", "Ninja",
+          "-DCMAKE_BUILD_TYPE=${{ inputs.build-type }}",
+          "-DCMAKE_C_COMPILER=cl",
+          "-DCMAKE_CXX_COMPILER=cl"
+        )
+
+        if ($embedded -eq "true") {
+          Write-Host "msvc-embedded-debug: CMP0141=NEW + Embedded (/Z7)"
+          $args += "-DCMAKE_POLICY_DEFAULT_CMP0141=NEW"
+          $args += "-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+        }
+
+        if ($env:CMAKE_C_COMPILER_LAUNCHER -and $env:CMAKE_C_COMPILER_LAUNCHER -ne "") {
+          Write-Host "Using sccache from PATH (launcher enabled)"
+          $args += "-DCMAKE_C_COMPILER_LAUNCHER=sccache"
+          $args += "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
+        } else {
+          Write-Host "WARNING: sccache not configured – caching disabled"
+        }
+
+        if ($extra -and $extra.Trim() -ne "") {
+          $args += ($extra -split '\s+' | Where-Object { $_ -ne "" })
+        }
+
+        Write-Host "Running: cmake $($args -join ' ')"
+        & cmake @args
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    ###########################################################################
+    # 4. BUILD
+    ###########################################################################
+    - name: Build
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -n "${{ inputs.target }}" ]; then
+          cmake --build "${{ inputs.build-dir }}" --target "${{ inputs.target }}" --parallel
+        else
+          cmake --build "${{ inputs.build-dir }}" --parallel
+        fi
+
+    ###########################################################################
+    # 5. CACHE STATS
+    ###########################################################################
+    - name: Compiler cache stats
+      if: always() && inputs.ccache-key != ''
+      shell: bash
+      run: |
+        set +e
+        echo "=============================================="
+        echo " COMPILER CACHE STATISTICS"
+        echo "=============================================="
+
+        if [[ "${{ runner.os }}" == "Windows" ]]; then
+          if command -v sccache >/dev/null 2>&1; then
+            sccache --show-stats || true
+          else
+            echo "sccache not found in PATH"
+          fi
+        else
+          if command -v ccache >/dev/null 2>&1; then
+            ccache -s || true
+          else
+            echo "ccache not found in PATH"
+          fi
+        fi
+
+        echo "=============================================="
+
+    ###########################################################################
+    # 6. TESTS (optional)
+    ###########################################################################
+    - name: Run tests
+      if: inputs.run-tests == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        ctest --test-dir "${{ inputs.build-dir }}" ${{ inputs.ctest-options }}
+
+    ###########################################################################
+    # 7. SAVE COMPILER CACHE
+    ###########################################################################
+    - name: Save ccache
+      if: success() && (runner.os == 'Linux' || runner.os == 'macOS') && inputs.ccache-key != ''
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: ${{ env.CCACHE_SAVE_KEY }}
+
+    - name: Save sccache
+      if: success() && runner.os == 'Windows' && inputs.ccache-key != ''
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ env.SCCACHE_DIR }}
+        key: ${{ env.SCCACHE_SAVE_KEY }}
