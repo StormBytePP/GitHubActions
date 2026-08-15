@@ -11,7 +11,10 @@ inputs:
     required: true
 
   ccache-key:
-    description: "Base cache key for ccache/sccache. Empty = disabled"
+    description: >
+      Non-empty enables compiler caching. The real Actions key is always
+      per-OS + toolchain (this value is only a version/namespace suffix, e.g. "v1").
+      Do not put matrix dependency flags here.
     required: false
     default: ""
 
@@ -80,17 +83,90 @@ runs:
   steps:
 
     ###########################################################################
+    # 0. COMPILER CACHE KEYS (per OS + toolchain; variant hash avoids matrix races)
+    ###########################################################################
+    # Layout:
+    #   BASE = ccache|sccache-<OS>-<toolchain>-<suffix>
+    #   SAVE = BASE-<run_id>-<12-char hash of configure/build-type/target>
+    # Parallel jobs with different -DWITH_* get different SAVE keys → no overwrite race.
+    # Jobs with identical options still share SAVE key (rare duplicate matrix cell).
+    # restore-keys uses BASE- so any recent run/variant can warm the cache.
+    - name: Compute compiler cache keys
+      if: inputs.ccache-key != ''
+      id: cachekeys
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        OS="${{ runner.os }}"
+        TOOL="${{ inputs.toolchain }}"
+        # Namespace / version only (e.g. "v1"). Strip spaces; refuse empty after trim.
+        SUFFIX="$(echo '${{ inputs.ccache-key }}' | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+        if [ -z "$SUFFIX" ]; then
+          echo "ccache-key is empty after trim"
+          exit 1
+        fi
+
+        if [ "$OS" = "Windows" ]; then
+          PREFIX="sccache"
+        else
+          PREFIX="ccache"
+        fi
+
+        BASE="${PREFIX}-${OS}-${TOOL}-${SUFFIX}"
+        VARIANT="$(
+          printf '%s\0%s\0%s' \
+            "${{ inputs.configure-options }}" \
+            "${{ inputs.build-type }}" \
+            "${{ inputs.target }}" \
+          | sha256sum | cut -c1-12
+        )"
+        SAVE="${BASE}-${GITHUB_RUN_ID}-${VARIANT}"
+
+        echo "base_key=${BASE}" >> "$GITHUB_OUTPUT"
+        echo "save_key=${SAVE}" >> "$GITHUB_OUTPUT"
+
+        echo "BASE_KEY=${BASE}" >> "$GITHUB_ENV"
+        echo "SAVE_KEY=${SAVE}" >> "$GITHUB_ENV"
+
+        echo "Compiler cache BASE=${BASE}"
+        echo "Compiler cache SAVE=${SAVE}"
+
+    ###########################################################################
     # 1. INSTALL TOOLCHAIN
     ###########################################################################
+    # Pass a stable key so install-toolchain still installs ccache/sccache and
+    # may do a first restore. We re-restore below with our canonical keys.
     - name: Install toolchain
       id: toolchain
       uses: stormbytepp/githubactions/.github/actions/install-toolchain@master
       with:
         toolchain: ${{ inputs.toolchain }}
-        ccache-key: ${{ inputs.ccache-key }}
+        ccache-key: ${{ inputs.ccache-key != '' && format('{0}-{1}', inputs.toolchain, inputs.ccache-key) || '' }}
         version: ${{ inputs.version }}
         docs: ${{ inputs.docs }}
         install-meson: ${{ inputs.install-meson }}
+
+    ###########################################################################
+    # 1a. RESTORE COMPILER CACHE (canonical OS+toolchain keys)
+    ###########################################################################
+    - name: Restore ccache
+      if: inputs.ccache-key != '' && (runner.os == 'Linux' || runner.os == 'macOS')
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: ${{ steps.cachekeys.outputs.save_key }}
+        restore-keys: |
+          ${{ steps.cachekeys.outputs.base_key }}-
+
+    - name: Restore sccache
+      if: inputs.ccache-key != '' && runner.os == 'Windows'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ env.SCCACHE_DIR }}
+        key: ${{ steps.cachekeys.outputs.save_key }}
+        restore-keys: |
+          ${{ steps.cachekeys.outputs.base_key }}-
 
     ###########################################################################
     # 1b. WINDOWS: drop GNU link.exe shadows + clean __VSCMD_PREINIT_PATH
@@ -153,8 +229,6 @@ runs:
 
         Write-Host "Using linker: $($linkCmd.Source)"
 
-        # Path-based check only. Do NOT use "$banner -notmatch" on multi-line
-        # cmd output: PowerShell treats it as a filter and false-positives.
         if ($linkCmd.Source -notmatch '(?i)[\\/]MSVC[\\/]|HostX64|Hostx64|Visual Studio') {
           Write-Error "link.exe does not look like MSVC: $($linkCmd.Source)"
           exit 1
@@ -267,7 +341,6 @@ runs:
           return ($parts -join ';')
         }
 
-        # Re-assert for this process tree (nested meson / runner.bat / ninja)
         $env:Path = Remove-GnuShadowPaths $env:Path
         $linkCmd = Get-Command link.exe -ErrorAction SilentlyContinue
         if ($null -eq $linkCmd) {
@@ -353,18 +426,20 @@ runs:
         ctest --test-dir "${{ inputs.build-dir }}" ${CTEST_OPTIONS}
 
     ###########################################################################
-    # 6. SAVE COMPILER CACHE
+    # 6. SAVE COMPILER CACHE (canonical keys; continue-on-error if duplicate)
     ###########################################################################
     - name: Save ccache
       if: success() && (runner.os == 'Linux' || runner.os == 'macOS') && inputs.ccache-key != ''
+      continue-on-error: true
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CCACHE_DIR }}
-        key: ${{ env.CCACHE_SAVE_KEY }}
+        key: ${{ steps.cachekeys.outputs.save_key }}
 
     - name: Save sccache
       if: success() && runner.os == 'Windows' && inputs.ccache-key != ''
+      continue-on-error: true
       uses: actions/cache/save@v4
       with:
         path: ${{ env.SCCACHE_DIR }}
-        key: ${{ env.SCCACHE_SAVE_KEY }}
+        key: ${{ steps.cachekeys.outputs.save_key }}
