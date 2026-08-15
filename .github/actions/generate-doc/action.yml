@@ -1,7 +1,6 @@
 name: Generate and Upload Documentation
 description: Build documentation and upload a GitHub Pages artifact (composite action).
 author: David C. Manuelda
-email: StormByte@gmail.com
 branding:
   icon: 'help-circle'
   color: 'white'
