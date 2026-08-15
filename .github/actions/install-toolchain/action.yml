@@ -83,10 +83,10 @@ runs:
       with:
         python-version: '3.x'
 
-    - name: Install Meson 1.4.0
+    - name: Install Meson 1.10.2
       shell: bash
       run: |
-        pip install meson==1.4.0
+        pip install meson==1.10.2
         meson --version
 
     - name: Install GCC
