@@ -1,7 +1,7 @@
 name: Generate and Deploy Docs
 
 ###############################################################################
-# 1. WORKFLOW INPUTS (FOR workflow_call)
+# 1. WORKFLOW INPUTS
 ###############################################################################
 on:
   workflow_call:
@@ -9,27 +9,37 @@ on:
       doc_target:
         required: true
         type: string
+        description: "CMake target used to generate the documentation"
 
       extra-cmake-options:
         required: false
         type: string
         default: ""
+        description: "Additional CMake options"
 
       extra-install:
         required: false
         type: string
         default: ""
+        description: "Extra packages to install before building docs"
 
       docs_source_dir:
         required: false
         type: string
         default: "./docs"
+        description: "Directory containing the documentation source"
+
+      docs_output_dir:
+        required: false
+        type: string
+        default: "./docs/html"   # ← ajusta esto según lo que genere tu action generate-doc
+        description: "Directory that contains the generated HTML (artifact path)"
 
 ###############################################################################
-# 2. CONCURRENCY CONTROL (PREVENT PARALLEL DEPLOYS)
+# 2. CONCURRENCY
 ###############################################################################
 concurrency:
-  group: "pages"
+  group: pages
   cancel-in-progress: false
 
 ###############################################################################
@@ -39,16 +49,9 @@ jobs:
   generate-docs:
     runs-on: ubuntu-latest
     steps:
-
-      #########################################################################
-      # 3.1 CHECKOUT REPOSITORY
-      #########################################################################
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      #########################################################################
-      # 3.2 GENERATE DOCUMENTATION USING REUSABLE ACTION
-      #########################################################################
       - name: Generate documentation
         uses: stormbytepp/githubactions/.github/actions/generate-doc@master
         with:
@@ -57,21 +60,29 @@ jobs:
           extra-install: ${{ inputs.extra-install }}
           docs_source_dir: ${{ inputs.docs_source_dir }}
 
-  #############################################################################
-  # 4. JOB: DEPLOY TO GITHUB PAGES
-  #############################################################################
+      # CRÍTICO: subir el artefacto para Pages
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ inputs.docs_output_dir }}
+
+###############################################################################
+# 4. JOB: DEPLOY TO GITHUB PAGES
+###############################################################################
   deploy:
-    runs-on: ubuntu-latest
     needs: generate-docs
+    runs-on: ubuntu-latest
+
+    # Permisos obligatorios
+    permissions:
+      pages: write
+      id-token: write
 
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      #########################################################################
-      # 4.1 DEPLOY GENERATED SITE
-      #########################################################################
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
