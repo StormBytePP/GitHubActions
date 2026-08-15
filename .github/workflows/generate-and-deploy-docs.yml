@@ -47,10 +47,10 @@ concurrency:
 jobs:
   generate-docs:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Generate documentation
         uses: stormbytepp/githubactions/.github/actions/generate-doc@master
         with:
@@ -59,7 +59,6 @@ jobs:
           extra-install: ${{ inputs.extra-install }}
           docs_source_dir: ${{ inputs.docs_source_dir }}
 
-      # CRÍTICO: subir el artefacto para Pages
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
@@ -72,7 +71,6 @@ jobs:
     needs: generate-docs
     runs-on: ubuntu-latest
 
-    # Permisos obligatorios
     permissions:
       pages: write
       id-token: write

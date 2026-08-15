@@ -1,0 +1,147 @@
+name: "Checkout Cached"
+description: "Checkout repository and cache git submodules by commit SHA"
+author: "David C. Manuelda"
+branding:
+  icon: "download"
+  color: "blue"
+
+inputs:
+  fetch-depth:
+    description: "Fetch depth for the parent repository (0 = full history)"
+    required: false
+    default: "0"
+
+  submodules:
+    description: "false | true | recursive"
+    required: false
+    default: "recursive"
+
+  token:
+    description: "Token used for checkout and submodule fetch"
+    required: false
+    default: ${{ github.token }}
+
+  persist-credentials:
+    description: "Persist credentials for subsequent git operations"
+    required: false
+    default: "true"
+
+  cache-key-prefix:
+    description: "Prefix for the submodule cache key"
+    required: false
+    default: "git-submodules"
+
+  path:
+    description: "Relative path under $GITHUB_WORKSPACE to place the repository"
+    required: false
+    default: "."
+
+runs:
+  using: "composite"
+  steps:
+
+    ###########################################################################
+    # 1. CHECKOUT PARENT (never fetch submodules here)
+    ###########################################################################
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: ${{ inputs.fetch-depth }}
+        submodules: false
+        token: ${{ inputs.token }}
+        persist-credentials: ${{ inputs.persist-credentials }}
+        path: ${{ inputs.path }}
+
+    ###########################################################################
+    # 2. RESOLVE SUBMODULE PATHS + CACHE KEY
+    ###########################################################################
+    - name: Resolve submodule cache metadata
+      if: inputs.submodules != 'false'
+      id: meta
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      run: |
+        set -euo pipefail
+
+        if [ ! -f .gitmodules ]; then
+          echo "has_submodules=false" >> "$GITHUB_OUTPUT"
+          echo "No .gitmodules found – skipping submodule cache"
+          exit 0
+        fi
+
+        mapfile -t PATHS < <(git config --file .gitmodules --get-regexp '^submodule\..*\.path$' | awk '{print $2}')
+        if [ ${#PATHS[@]} -eq 0 ]; then
+          echo "has_submodules=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "has_submodules=true" >> "$GITHUB_OUTPUT"
+
+        # Deterministic key from gitlink SHAs recorded in the parent tree
+        HASH="$(git ls-tree HEAD -- "${PATHS[@]}" | sha256sum | awk '{print substr($1,1,20)}')"
+        PREFIX="${{ inputs.cache-key-prefix }}"
+        echo "cache_key=${PREFIX}-${HASH}" >> "$GITHUB_OUTPUT"
+        echo "cache_key=${PREFIX}-${HASH}"
+
+        # Multiline path list for actions/cache (modules + working trees)
+        {
+          echo "cache_paths<<EOF"
+          echo ".git/modules"
+          printf '%s\n' "${PATHS[@]}"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    ###########################################################################
+    # 3. RESTORE SUBMODULE CACHE
+    ###########################################################################
+    - name: Restore submodule cache
+      if: inputs.submodules != 'false' && steps.meta.outputs.has_submodules == 'true'
+      id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.meta.outputs.cache_paths }}
+        key: ${{ steps.meta.outputs.cache_key }}
+
+    ###########################################################################
+    # 4. FETCH / SYNC SUBMODULES
+    ###########################################################################
+    - name: Update submodules
+      if: inputs.submodules != 'false' && steps.meta.outputs.has_submodules == 'true'
+      shell: bash
+      working-directory: ${{ inputs.path }}
+      env:
+        # Ensure HTTPS submodules can authenticate on private repos
+        token: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+
+        RECURSIVE_FLAG=""
+        if [ "${{ inputs.submodules }}" = "recursive" ]; then
+          RECURSIVE_FLAG="--recursive"
+        fi
+
+        if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
+          echo "Submodule cache HIT – verifying working trees"
+          # Fast when objects/worktrees already match; repairs incomplete restores
+          git submodule sync $RECURSIVE_FLAG
+          git submodule update --init $RECURSIVE_FLAG --force
+        else
+          echo "Submodule cache MISS – cloning submodules"
+          git submodule sync $RECURSIVE_FLAG
+          git submodule update --init $RECURSIVE_FLAG --force
+        fi
+
+        git submodule status $RECURSIVE_FLAG || true
+
+    ###########################################################################
+    # 5. SAVE SUBMODULE CACHE (only on miss)
+    ###########################################################################
+    - name: Save submodule cache
+      if: >-
+        inputs.submodules != 'false'
+        && steps.meta.outputs.has_submodules == 'true'
+        && steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ steps.meta.outputs.cache_paths }}
+        key: ${{ steps.meta.outputs.cache_key }}

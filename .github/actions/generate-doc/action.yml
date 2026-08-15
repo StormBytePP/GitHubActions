@@ -30,12 +30,13 @@ runs:
   steps:
 
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: stormbytepp/githubactions/.github/actions/checkout-cached@master
       with:
         fetch-depth: 0
         submodules: recursive
 
     - name: Install toolchain
+      id: toolchain
       uses: stormbytepp/githubactions/.github/actions/install-toolchain@master
       with:
         toolchain: clang
@@ -56,17 +57,27 @@ runs:
         packages: ${{ inputs.extra-install }}
         cache-key: ${{ steps.cachekey.outputs.cache_key }}
 
-    - name: Build with CMake
-      uses: ashutoshvarma/action-cmake-build@master
-      with:
-        build-dir: ${{ github.workspace }}/build
-        cc: /usr/bin/clang
-        cxx: /usr/bin/clang++
-        configure-options: >-
-          -G Ninja
-          ${{ inputs.extra-cmake-options }}
-        build-type: Release
-        target: ${{ inputs.doc_target }}
+    - name: Configure CMake
+      shell: bash
+      env:
+        EXTRA_CMAKE_OPTIONS: ${{ inputs.extra-cmake-options }}
+      run: |
+        set -euo pipefail
+        # shellcheck disable=SC2086
+        cmake -S . -B "${{ github.workspace }}/build" \
+          -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_C_COMPILER="${{ steps.toolchain.outputs.c_compiler }}" \
+          -DCMAKE_CXX_COMPILER="${{ steps.toolchain.outputs.cxx_compiler }}" \
+          ${EXTRA_CMAKE_OPTIONS}
+
+    - name: Build documentation target
+      shell: bash
+      run: |
+        set -euo pipefail
+        cmake --build "${{ github.workspace }}/build" \
+          --target "${{ inputs.doc_target }}" \
+          --parallel
 
     - name: Build with Jekyll
       uses: actions/jekyll-build-pages@v1

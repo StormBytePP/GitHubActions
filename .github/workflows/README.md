@@ -8,42 +8,55 @@ Reusable workflow that builds documentation using the `generate-doc` composite a
 
 ### Inputs
 
-| Name                  | Required | Default       | Description |
-|-----------------------|----------|---------------|-------------|
-| `doc_target`          | **Yes**  | —             | CMake target used to generate the documentation |
-| `extra-cmake-options` | No       | `""`          | Additional CMake configuration options |
-| `extra-install`       | No       | `""`          | Space-separated list of extra APT packages to install |
-| `docs_source_dir`     | No       | `./docs`      | Directory containing the documentation source |
-| `docs_output_dir`     | No       | `./docs/html` | Directory that contains the generated HTML (used as artifact path) |
+| Name                  | Required | Default   | Description |
+|-----------------------|----------|-----------|-------------|
+| `doc_target`          | **Yes**  | —         | CMake target used to generate the documentation |
+| `extra-cmake-options` | No       | `""`      | Additional CMake configuration options |
+| `extra-install`       | No       | `""`      | Space-separated list of extra APT packages to install |
+| `docs_source_dir`     | No       | `./docs`  | Directory containing the documentation source (Jekyll) |
+| `docs_output_dir`     | No       | `./_site` | Directory uploaded as the GitHub Pages artifact |
 
 ### Behavior
 
-1. **generate-docs** job
-   - Checks out the repository
-   - Calls the `generate-doc` composite action to build the documentation
-   - Uploads the generated HTML as a GitHub Pages artifact (`actions/upload-pages-artifact`)
+1. **generate-docs** job  
+   - Calls `generate-doc` (checkout with cached submodules, toolchain, CMake doc target, Jekyll → `./_site`)  
+   - Uploads `docs_output_dir` with `actions/upload-pages-artifact@v3`
 
-2. **deploy** job
-   - Depends on `generate-docs`
-   - Deploys the artifact to GitHub Pages using `actions/deploy-pages@v4`
-   - Sets the `github-pages` environment and exposes the deployed page URL
+2. **deploy** job  
+   - Depends on `generate-docs`  
+   - Deploys with `actions/deploy-pages@v4`  
+   - Uses the `github-pages` environment and exposes the page URL
+
+Concurrency group `pages` is used so deploys do not overlap (`cancel-in-progress: false`).
 
 ### Usage Example
 
 ```yaml
+name: Documentation Deployment
+
+on:
+  push:
+    branches: ["master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 jobs:
   docs:
     uses: stormbytepp/githubactions/.github/workflows/generate-and-deploy-docs.yml@master
     with:
       doc_target: my_docs_target
       docs_source_dir: ./docs
-      docs_output_dir: ./docs/html          # adjust if needed
-      extra-cmake-options: -DENABLE_DOCS=ON
+      docs_output_dir: ./_site
+      extra-cmake-options: -DENABLE_DOC=ON
 ```
 
 ### Required Permissions
 
-The **calling** workflow must declare these permissions:
+The **calling** workflow should declare:
 
 ```yaml
 permissions:
@@ -52,12 +65,13 @@ permissions:
   id-token: write
 ```
 
-### External Actions Used
+The reusable `generate-docs` job also sets `actions: write` so submodule caches from `checkout-cached` can be saved.
 
-- `actions/checkout@v4`
+### External actions used
+
+- `stormbytepp/githubactions/.github/actions/generate-doc`
 - `actions/upload-pages-artifact@v3`
 - `actions/deploy-pages@v4`
-- `stormbytepp/githubactions/.github/actions/generate-doc` (composite action)
 
 ### License
 
