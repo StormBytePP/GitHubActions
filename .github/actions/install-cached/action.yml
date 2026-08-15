@@ -2,7 +2,7 @@ name: Cache and Install Packages
 description: >
   Installs packages with caching support.
   - Linux: APT (with deterministic .deb caching)
-  - Windows: Chocolatey
+  - Windows: Chocolatey (and appends common install dirs to PATH)
   - macOS: Homebrew
 author: David C. Manuelda
 branding:
@@ -39,8 +39,63 @@ runs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        Write-Host "Installing packages with Chocolatey: ${{ inputs.packages }}"
-        choco install ${{ inputs.packages }} -y
+        $ErrorActionPreference = "Stop"
+        $pkgs = "${{ inputs.packages }}".Trim()
+        Write-Host "Installing packages with Chocolatey: $pkgs"
+        choco install ($pkgs -split '\s+') -y
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        # Ensure tools are visible to later steps / composite actions / Meson
+        $pathAdds = [System.Collections.Generic.List[string]]::new()
+        $pathAdds.Add("C:\ProgramData\chocolatey\bin")
+
+        foreach ($name in ($pkgs -split '\s+')) {
+          if ([string]::IsNullOrWhiteSpace($name)) { continue }
+          $n = $name.ToLowerInvariant()
+
+          if ($n -eq "nasm") {
+            foreach ($d in @(
+              "${env:ProgramFiles}\NASM",
+              "${env:ProgramFiles(x86)}\NASM"
+            )) {
+              if (Test-Path (Join-Path $d "nasm.exe")) {
+                $pathAdds.Add($d)
+                Write-Host "PATH: NASM -> $d"
+              }
+            }
+          }
+
+          if ($n -eq "yasm") {
+            foreach ($d in @(
+              "${env:ProgramFiles}\yasm",
+              "${env:ProgramFiles(x86)}\yasm",
+              "C:\ProgramData\chocolatey\lib\yasm\tools"
+            )) {
+              if ((Test-Path (Join-Path $d "yasm.exe")) -or (Test-Path $d)) {
+                $pathAdds.Add($d)
+                Write-Host "PATH: yasm candidate -> $d"
+              }
+            }
+          }
+        }
+
+        foreach ($d in $pathAdds) {
+          if (-not [string]::IsNullOrWhiteSpace($d) -and (Test-Path $d)) {
+            Add-Content -Path $env:GITHUB_PATH -Value $d
+            # Also for the rest of this step
+            $env:Path = "$d;$env:Path"
+          }
+        }
+
+        # Best-effort verification for packages that ship well-known tools
+        if ($pkgs -match '(?i)\bnasm\b') {
+          $nasm = Get-Command nasm.exe -ErrorAction SilentlyContinue
+          if ($null -eq $nasm) {
+            Write-Warning "nasm.exe not found on PATH after install (later steps may fail)"
+          } else {
+            Write-Host "nasm OK: $($nasm.Source)"
+          }
+        }
 
     ###########################################################################
     # macOS → Homebrew
@@ -50,12 +105,12 @@ runs:
       shell: bash
       run: |
         echo "Installing packages with Homebrew: ${{ inputs.packages }}"
+        # shellcheck disable=SC2086
         brew install ${{ inputs.packages }}
 
     ###########################################################################
-    # LINUX → APT (con cache completo)
+    # LINUX → APT (with cache)
     ###########################################################################
-
     - name: Prepare APT cache key and directory
       if: runner.os == 'Linux' && inputs.cache-key != ''
       id: prep
@@ -107,6 +162,7 @@ runs:
         set -euo pipefail
         echo "[STEP 3] Updating package lists and downloading missing packages..."
         sudo apt-get update -qq
+        # shellcheck disable=SC2086
         sudo apt-get install --download-only -y ${{ inputs.packages }}
 
         if [ -n "${CACHE_DIR:-}" ]; then
@@ -121,6 +177,7 @@ runs:
       shell: bash
       run: |
         echo "[STEP 4] Installing packages..."
+        # shellcheck disable=SC2086
         sudo apt-get install -y ${{ inputs.packages }}
 
     - name: Save APT cache
