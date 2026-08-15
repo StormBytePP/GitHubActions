@@ -138,7 +138,6 @@ runs:
           brew install doxygen graphviz
         fi
 
-        # Make sure the new compilers are in PATH
         if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
           echo "$(brew --prefix gcc@${{ env.GCC_VERSION }})/bin" >> $GITHUB_PATH
         else
@@ -146,7 +145,7 @@ runs:
         fi
 
     ###########################################################################
-    # 3. MESON (optional) - works on all OSes
+    # 3. MESON (optional)
     ###########################################################################
     - name: Setup Python + Meson
       if: inputs.install-meson == 'true'
@@ -172,11 +171,13 @@ runs:
         echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
         echo "CCACHE_MAXSIZE=2G" >> $GITHUB_ENV
 
-        # Linux specific paths
         if [ -d /usr/lib/ccache ]; then
           echo "PATH=/usr/lib/ccache:$PATH" >> $GITHUB_ENV
         elif [ -d /usr/lib64/ccache ]; then
           echo "PATH=/usr/lib64/ccache:$PATH" >> $GITHUB_ENV
+        elif command -v ccache >/dev/null; then
+          CCACHE_PATH="$(dirname $(which ccache))"
+          echo "PATH=$CCACHE_PATH:$PATH" >> $GITHUB_ENV
         fi
 
         SANITIZED=$(echo "${{ inputs.ccache-key }}" | tr ' /' '-' | sed 's/[^A-Za-z0-9._+-]/-/g')
@@ -185,6 +186,7 @@ runs:
         echo "CCACHE_SAVE_KEY=${BASE_KEY}-${{ github.run_id }}" >> $GITHUB_ENV
 
         ccache -M 2G || true
+        ccache -z || true
 
     - name: Restore ccache
       if: (runner.os == 'Linux' || runner.os == 'macOS') && inputs.ccache-key != ''
@@ -196,7 +198,7 @@ runs:
           ${{ env.CCACHE_BASE_KEY }}-
 
     ###########################################################################
-    # 5. WINDOWS – MSVC + BUILDCACHE
+    # 5. WINDOWS – MSVC + BUILDCACHE (LAUNCHER METHOD)
     ###########################################################################
     - name: Setup MSVC environment
       if: runner.os == 'Windows'
@@ -209,47 +211,51 @@ runs:
       id: buildcache
       shell: pwsh
       run: |
+        $ErrorActionPreference = "Stop"
         $version = "0.31.5"
         $extractDir = "$env:RUNNER_TEMP\buildcache"
         $zipUrl = "https://gitlab.com/bits-n-bites/buildcache/-/releases/v$version/downloads/buildcache-windows.zip"
         $zipPath = "$env:RUNNER_TEMP\buildcache.zip"
 
         if (-not (Test-Path "$extractDir\buildcache\bin\buildcache.exe")) {
+          Write-Host "Downloading BuildCache $version..."
           Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
           Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
         }
 
-        $bcExe = Join-Path $extractDir "buildcache\bin\buildcache.exe"
+        $bcExe = (Resolve-Path "$extractDir\buildcache\bin\buildcache.exe").Path
         "buildcache_bin=$bcExe" | Out-File $env:GITHUB_OUTPUT -Append
 
-        $dir = "$env:LOCALAPPDATA\buildcache"
-        New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        "BUILDCACHE_DIR=$dir" | Out-File $env:GITHUB_ENV -Append
-        "buildcache_dir=$dir" | Out-File $env:GITHUB_OUTPUT -Append
+        # Cache directory
+        $cacheDir = "$env:LOCALAPPDATA\buildcache"
+        New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+        "BUILDCACHE_DIR=$cacheDir" | Out-File $env:GITHUB_ENV -Append
+        "buildcache_dir=$cacheDir" | Out-File $env:GITHUB_OUTPUT -Append
 
+        # Keys
         $sanitized = "${{ inputs.ccache-key }}" -replace '[^A-Za-z0-9._+-]', '-'
         $baseKey = "buildcache-msvc-$sanitized"
         $saveKey = "$baseKey-${{ github.run_id }}"
         "BUILDCACHE_BASE_KEY=$baseKey" | Out-File $env:GITHUB_ENV -Append
         "BUILDCACHE_SAVE_KEY=$saveKey" | Out-File $env:GITHUB_ENV -Append
 
-        $realCl = "$env:VCToolsInstallDir\bin\Hostx64\x64\cl.exe"
-        $wrapperDir = "$env:RUNNER_TEMP\buildcache-wrapper"
-        New-Item -ItemType Directory -Path $wrapperDir -Force | Out-Null
+        # === CLEAN METHOD: use only CMake compiler launchers ===
+        # Do NOT put a fake cl.exe in PATH
+        "CMAKE_C_COMPILER_LAUNCHER=$bcExe" | Out-File $env:GITHUB_ENV -Append
+        "CMAKE_CXX_COMPILER_LAUNCHER=$bcExe" | Out-File $env:GITHUB_ENV -Append
 
-        @"
-        @echo off
-        setlocal
-        set REAL_CL=$realCl
-        set BUILDCACHE_IMPERSONATE=%REAL_CL%
-        "$bcExe" "%REAL_CL%" %*
-        endlocal
-        "@ | Set-Content -Path "$wrapperDir\cl.bat" -Encoding ASCII
+        # Keep the real compilers from msvc-dev-cmd
+        "CMAKE_C_COMPILER=cl" | Out-File $env:GITHUB_ENV -Append
+        "CMAKE_CXX_COMPILER=cl" | Out-File $env:GITHUB_ENV -Append
+        "CC=cl" | Out-File $env:GITHUB_ENV -Append
+        "CXX=cl" | Out-File $env:GITHUB_ENV -Append
 
-        "buildcache_wrapper=$wrapperDir" | Out-File $env:GITHUB_OUTPUT -Append
-        "PATH=$wrapperDir;$env:PATH" | Out-File $env:GITHUB_ENV -Append
-        "CMAKE_C_COMPILER=$wrapperDir\cl.bat"  | Out-File $env:GITHUB_ENV -Append
-        "CMAKE_CXX_COMPILER=$wrapperDir\cl.bat" | Out-File $env:GITHUB_ENV -Append
+        # Optional but recommended
+        "BUILDCACHE_DIR=$cacheDir" | Out-File $env:GITHUB_ENV -Append
+
+        Write-Host "=== BuildCache configured (launcher method) ==="
+        Write-Host "BuildCache: $bcExe"
+        Write-Host "Cache dir:  $cacheDir"
 
     - name: Restore BuildCache
       if: runner.os == 'Windows' && inputs.ccache-key != ''
@@ -265,21 +271,39 @@ runs:
     ###########################################################################
     - name: Set compiler outputs
       id: set-outputs
-      shell: pwsh
+      shell: bash
       run: |
-        $tool = "${{ inputs.toolchain }}"
-        if ($tool -eq "gcc") {
-          $c = "gcc"; $cxx = "g++"
-        } elseif ($tool -eq "clang" -or $tool -eq "clang-libc++") {
-          $c = "clang"; $cxx = "clang++"
-        } else {
-          $c = "cl"; $cxx = "cl"
-        }
+        TOOL="${{ inputs.toolchain }}"
+        OS="${{ runner.os }}"
 
-        "c_compiler=$c"   | Out-File $env:GITHUB_OUTPUT -Append
-        "cxx_compiler=$cxx" | Out-File $env:GITHUB_OUTPUT -Append
-        "CC=$c"  | Out-File $env:GITHUB_ENV -Append
-        "CXX=$cxx" | Out-File $env:GITHUB_ENV -Append
+        if [[ "$OS" == "Windows" ]]; then
+          C_COMPILER="cl"
+          CXX_COMPILER="cl"
+        else
+          case "$TOOL" in
+            gcc)
+              C_COMPILER="gcc"
+              CXX_COMPILER="g++"
+              ;;
+            clang|clang-libc++)
+              C_COMPILER="clang"
+              CXX_COMPILER="clang++"
+              ;;
+          esac
+        fi
+
+        echo "c_compiler=$C_COMPILER" >> $GITHUB_OUTPUT
+        echo "cxx_compiler=$CXX_COMPILER" >> $GITHUB_OUTPUT
+
+        # Only set CC/CXX if they are not already defined by ccache/buildcache
+        if [[ -z "${CC:-}" ]]; then
+          echo "CC=$C_COMPILER" >> $GITHUB_ENV
+        fi
+        if [[ -z "${CXX:-}" ]]; then
+          echo "CXX=$CXX_COMPILER" >> $GITHUB_ENV
+        fi
+
+        echo "Final compilers → CC=${CC:-$C_COMPILER}  CXX=${CXX:-$CXX_COMPILER}"
 
     ###########################################################################
     # 7. SAVE CACHES
