@@ -93,8 +93,7 @@ runs:
         install-meson: ${{ inputs.install-meson }}
 
     ###########################################################################
-    # 1b. WINDOWS PATH: drop GNU link + neutralize __VSCMD_PREINIT_PATH
-    #     (ashutoshvarma removes Git sh.exe dir; we also fix PREINIT used by VS tools)
+    # 1b. WINDOWS: drop GNU link.exe shadows + clean __VSCMD_PREINIT_PATH
     ###########################################################################
     - name: Sanitize PATH for MSVC linker
       if: runner.os == 'Windows'
@@ -142,11 +141,9 @@ runs:
         $linkDir = Split-Path -Parent $linkCmd.Source
         $env:Path = "$linkDir;$env:Path"
 
-        # Persist for later steps
         $linkDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         "PATH=$env:Path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-        # Critical: VsDevCmd / some tools re-apply this and reintroduce Git/Strawberry
         if ($env:__VSCMD_PREINIT_PATH) {
           $cleanPreinit = Remove-GnuShadowPaths $env:__VSCMD_PREINIT_PATH
           $env:__VSCMD_PREINIT_PATH = $cleanPreinit
@@ -155,11 +152,20 @@ runs:
         }
 
         Write-Host "Using linker: $($linkCmd.Source)"
-        $banner = cmd /c "link.exe 2>&1"
-        if ($banner -notmatch 'Microsoft') {
-          Write-Error "Expected MSVC link.exe, got non-Microsoft banner"
+
+        # Path-based check only. Do NOT use "$banner -notmatch" on multi-line
+        # cmd output: PowerShell treats it as a filter and false-positives.
+        if ($linkCmd.Source -notmatch '(?i)[\\/]MSVC[\\/]|HostX64|Hostx64|Visual Studio') {
+          Write-Error "link.exe does not look like MSVC: $($linkCmd.Source)"
           exit 1
         }
+
+        $bannerText = @(cmd /c "link.exe 2>&1") | Out-String
+        Write-Host "link.exe banner (first 300 chars):"
+        if ($bannerText.Length -gt 0) {
+          Write-Host $bannerText.Substring(0, [Math]::Min(300, $bannerText.Length))
+        }
+
         Write-Host "MSVC linker OK"
         exit 0
 
@@ -242,7 +248,6 @@ runs:
       run: |
         $ErrorActionPreference = "Stop"
 
-        # Re-assert MSVC link for this process tree (nested meson/ninja/runner.bat)
         function Remove-GnuShadowPaths([string]$pathValue) {
           $gnuPathFragments = @(
             'Git\usr\bin', 'Git\mingw64\bin', 'Git\mingw32\bin',
@@ -262,6 +267,7 @@ runs:
           return ($parts -join ';')
         }
 
+        # Re-assert for this process tree (nested meson / runner.bat / ninja)
         $env:Path = Remove-GnuShadowPaths $env:Path
         $linkCmd = Get-Command link.exe -ErrorAction SilentlyContinue
         if ($null -eq $linkCmd) {
@@ -274,13 +280,12 @@ runs:
           $env:__VSCMD_PREINIT_PATH = Remove-GnuShadowPaths $env:__VSCMD_PREINIT_PATH
         }
 
-        Write-Host "Build-time linker resolution:"
-        where.exe link
-        $banner = cmd /c "link.exe 2>&1"
-        if ($banner -notmatch 'Microsoft') {
-          Write-Error "Build step still sees non-MSVC link.exe"
+        Write-Host "Build-time linker: $($linkCmd.Source)"
+        if ($linkCmd.Source -notmatch '(?i)[\\/]MSVC[\\/]|HostX64|Hostx64|Visual Studio') {
+          Write-Error "Build step link.exe does not look like MSVC: $($linkCmd.Source)"
           exit 1
         }
+        where.exe link
 
         $target = "${{ inputs.target }}"
         if ($target -ne "") {
