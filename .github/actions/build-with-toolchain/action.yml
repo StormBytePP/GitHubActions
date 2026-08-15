@@ -98,14 +98,17 @@ runs:
     - name: Configure CMake (Linux/macOS)
       if: runner.os != 'Windows'
       shell: bash
+      env:
+        CONFIGURE_OPTIONS: ${{ inputs.configure-options }}
       run: |
         set -euo pipefail
+        # shellcheck disable=SC2086
         cmake -S . -B "${{ inputs.build-dir }}" \
           -G Ninja \
           -DCMAKE_BUILD_TYPE="${{ inputs.build-type }}" \
           -DCMAKE_C_COMPILER="${{ steps.toolchain.outputs.c_compiler }}" \
           -DCMAKE_CXX_COMPILER="${{ steps.toolchain.outputs.cxx_compiler }}" \
-          ${{ inputs.configure-options }}
+          ${CONFIGURE_OPTIONS}
 
     ###########################################################################
     # 3. CONFIGURE (Windows – sccache + optional Embedded debug)
@@ -113,41 +116,57 @@ runs:
     - name: Configure CMake (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
+      env:
+        CONFIGURE_OPTIONS: ${{ inputs.configure-options }}
       run: |
         $ErrorActionPreference = "Stop"
 
-        $extra = "${{ inputs.configure-options }}"
+        $extra = $env:CONFIGURE_OPTIONS
         $embedded = "${{ inputs.msvc-embedded-debug }}"
 
-        $args = @(
+        $args = [System.Collections.Generic.List[string]]::new()
+        $args.AddRange(@(
           "-S", ".",
           "-B", "${{ inputs.build-dir }}",
           "-G", "Ninja",
           "-DCMAKE_BUILD_TYPE=${{ inputs.build-type }}",
           "-DCMAKE_C_COMPILER=cl",
           "-DCMAKE_CXX_COMPILER=cl"
-        )
+        ))
 
         if ($embedded -eq "true") {
           Write-Host "msvc-embedded-debug: CMP0141=NEW + Embedded (/Z7)"
-          $args += "-DCMAKE_POLICY_DEFAULT_CMP0141=NEW"
-          $args += "-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded"
+          $args.Add("-DCMAKE_POLICY_DEFAULT_CMP0141=NEW")
+          $args.Add("-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded")
         }
 
         if ($env:CMAKE_C_COMPILER_LAUNCHER -and $env:CMAKE_C_COMPILER_LAUNCHER -ne "") {
           Write-Host "Using sccache from PATH (launcher enabled)"
-          $args += "-DCMAKE_C_COMPILER_LAUNCHER=sccache"
-          $args += "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache"
+          $args.Add("-DCMAKE_C_COMPILER_LAUNCHER=sccache")
+          $args.Add("-DCMAKE_CXX_COMPILER_LAUNCHER=sccache")
         } else {
           Write-Host "WARNING: sccache not configured – caching disabled"
         }
 
+        # Parse extra options: keep "quoted strings" as a single argument
         if ($extra -and $extra.Trim() -ne "") {
-          $args += ($extra -split '\s+' | Where-Object { $_ -ne "" })
+          $matches = [regex]::Matches($extra, '("([^"]*)"|''([^'']*)''|\S+)')
+          foreach ($m in $matches) {
+            $t = $m.Value
+            if ($t.Length -ge 2 -and (
+                ($t.StartsWith('"') -and $t.EndsWith('"')) -or
+                ($t.StartsWith("'") -and $t.EndsWith("'"))
+              )) {
+              $t = $t.Substring(1, $t.Length - 2)
+            }
+            if ($t -ne "") {
+              $args.Add($t)
+            }
+          }
         }
 
         Write-Host "Running: cmake $($args -join ' ')"
-        & cmake @args
+        & cmake @($args.ToArray())
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     ###########################################################################
@@ -197,9 +216,12 @@ runs:
     - name: Run tests
       if: inputs.run-tests == 'true'
       shell: bash
+      env:
+        CTEST_OPTIONS: ${{ inputs.ctest-options }}
       run: |
         set -euo pipefail
-        ctest --test-dir "${{ inputs.build-dir }}" ${{ inputs.ctest-options }}
+        # shellcheck disable=SC2086
+        ctest --test-dir "${{ inputs.build-dir }}" ${CTEST_OPTIONS}
 
     ###########################################################################
     # 7. SAVE COMPILER CACHE
