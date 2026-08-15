@@ -77,7 +77,12 @@ runs:
           exit 0
         fi
 
-        mapfile -t PATHS < <(git config --file .gitmodules --get-regexp '^submodule\..*\.path$' | awk '{print $2}')
+        # Bash 3.2 compatible (macOS): no mapfile
+        PATHS=()
+        while IFS= read -r p; do
+          [ -n "$p" ] && PATHS+=("$p")
+        done < <(git config --file .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null | awk '{print $2}')
+
         if [ ${#PATHS[@]} -eq 0 ]; then
           echo "has_submodules=false" >> "$GITHUB_OUTPUT"
           exit 0
@@ -85,7 +90,13 @@ runs:
 
         echo "has_submodules=true" >> "$GITHUB_OUTPUT"
 
-        HASH="$(git ls-tree HEAD -- "${PATHS[@]}" | sha256sum | awk '{print substr($1,1,20)}')"
+        # sha256sum on Linux; shasum on macOS
+        if command -v sha256sum >/dev/null 2>&1; then
+          HASH="$(git ls-tree HEAD -- "${PATHS[@]}" | sha256sum | awk '{print substr($1,1,20)}')"
+        else
+          HASH="$(git ls-tree HEAD -- "${PATHS[@]}" | shasum -a 256 | awk '{print substr($1,1,20)}')"
+        fi
+
         PREFIX="${{ inputs.cache-key-prefix }}"
         echo "cache_key=${PREFIX}-${HASH}" >> "$GITHUB_OUTPUT"
         echo "cache_key=${PREFIX}-${HASH}"
@@ -127,14 +138,19 @@ runs:
 
         if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
           echo "Submodule cache HIT – verifying working trees"
+          # shellcheck disable=SC2086
           git submodule sync $RECURSIVE_FLAG
+          # shellcheck disable=SC2086
           git submodule update --init $RECURSIVE_FLAG --force
         else
           echo "Submodule cache MISS – cloning submodules"
+          # shellcheck disable=SC2086
           git submodule sync $RECURSIVE_FLAG
+          # shellcheck disable=SC2086
           git submodule update --init $RECURSIVE_FLAG --force
         fi
 
+        # shellcheck disable=SC2086
         git submodule status $RECURSIVE_FLAG || true
 
     ###########################################################################
@@ -174,8 +190,11 @@ runs:
 
         echo "Pruning caches with prefix '${PREFIX}-' except '${KEEP_KEY}'"
 
-        # --key matches by prefix; page through a reasonable limit
-        mapfile -t ENTRIES < <(
+        # Bash 3.2 compatible: no mapfile
+        ENTRIES=()
+        while IFS= read -r line; do
+          [ -n "$line" ] && ENTRIES+=("$line")
+        done < <(
           gh cache list --key "${PREFIX}-" --limit 100 \
             --json id,key,sizeInBytes \
             --jq '.[] | "\(.id)\t\(.key)\t\(.sizeInBytes)"' \
@@ -189,10 +208,10 @@ runs:
 
         deleted=0
         for entry in "${ENTRIES[@]}"; do
-          id="${entry%%$'\t'*}"
-          rest="${entry#*$'\t'}"
-          key="${rest%%$'\t'*}"
-          size="${rest#*$'\t'}"
+          id="${entry%%	*}"
+          rest="${entry#*	}"
+          key="${rest%%	*}"
+          size="${rest#*	}"
 
           if [ -z "$id" ] || [ "$key" = "$KEEP_KEY" ]; then
             echo "Keep: $key"
