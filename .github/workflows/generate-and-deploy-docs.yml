@@ -32,8 +32,7 @@ on:
       docs_output_dir:
         required: false
         type: string
-        default: "./docs/html"   # ← ajusta esto según lo que genere tu action generate-doc
-        description: "Directory that contains the generated HTML (artifact path)"
+        default: "./_site"
 
 ###############################################################################
 # 2. CONCURRENCY
