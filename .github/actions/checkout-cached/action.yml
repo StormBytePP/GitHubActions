@@ -90,11 +90,22 @@ runs:
 
         echo "has_submodules=true" >> "$GITHUB_OUTPUT"
 
-        # sha256sum on Linux; shasum on macOS
+        # -----------------------------------------------------------------
+        # Stronger cache key
+        # We cannot see nested submodule SHAs before they are initialized,
+        # but we can make the key much more reliable by combining:
+        #   1. All direct gitlink entries (SHA + path)
+        #   2. Full content of .gitmodules
+        #   3. Superproject HEAD
+        # -----------------------------------------------------------------
+        LINKS="$(git ls-tree -r HEAD | awk '$2 == "commit" { print $3 " " $4 }' | sort)"
+        MOD="$(git show HEAD:.gitmodules 2>/dev/null || true)"
+        HEAD_SHA="$(git rev-parse HEAD)"
+
         if command -v sha256sum >/dev/null 2>&1; then
-          HASH="$(git ls-tree HEAD -- "${PATHS[@]}" | sha256sum | awk '{print substr($1,1,20)}')"
+          HASH="$(printf '%s\n%s\n%s\n' "$LINKS" "$MOD" "$HEAD_SHA" | sha256sum | awk '{print substr($1,1,24)}')"
         else
-          HASH="$(git ls-tree HEAD -- "${PATHS[@]}" | shasum -a 256 | awk '{print substr($1,1,20)}')"
+          HASH="$(printf '%s\n%s\n%s\n' "$LINKS" "$MOD" "$HEAD_SHA" | shasum -a 256 | awk '{print substr($1,1,24)}')"
         fi
 
         PREFIX="${{ inputs.cache-key-prefix }}"
@@ -136,19 +147,22 @@ runs:
           RECURSIVE_FLAG="--recursive"
         fi
 
+        echo "Syncing submodule URLs..."
+        # shellcheck disable=SC2086
+        git submodule sync $RECURSIVE_FLAG
+
         if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
-          echo "Submodule cache HIT – verifying working trees"
-          # shellcheck disable=SC2086
-          git submodule sync $RECURSIVE_FLAG
-          # shellcheck disable=SC2086
-          git submodule update --init $RECURSIVE_FLAG --force
+          echo "Submodule cache HIT – forcing consistent working trees"
         else
-          echo "Submodule cache MISS – cloning submodules"
-          # shellcheck disable=SC2086
-          git submodule sync $RECURSIVE_FLAG
-          # shellcheck disable=SC2086
-          git submodule update --init $RECURSIVE_FLAG --force
+          echo "Submodule cache MISS – cloning/updating submodules"
         fi
+
+        # Always run update --init --force.
+        # On HIT this mainly checks out the recorded commits using objects
+        # already present in .git/modules.
+        # --jobs 1 avoids races with deep relative paths on some runners.
+        # shellcheck disable=SC2086
+        git submodule update --init $RECURSIVE_FLAG --force --jobs 1
 
         # shellcheck disable=SC2086
         git submodule status $RECURSIVE_FLAG || true
