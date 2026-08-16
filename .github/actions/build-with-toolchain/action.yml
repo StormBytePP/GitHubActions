@@ -525,11 +525,14 @@ runs:
         }
         where.exe link
 
+        $jobs = [Environment]::ProcessorCount
+        if ($jobs -lt 1) { $jobs = 4 }
+
         $target = "${{ inputs.target }}"
         if ($target -ne "") {
-          cmake --build "${{ inputs.build-dir }}" --target $target --parallel
+          ninja -C "${{ inputs.build-dir }}" -j $jobs $target
         } else {
-          cmake --build "${{ inputs.build-dir }}" --parallel
+          ninja -C "${{ inputs.build-dir }}" -j $jobs
         }
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -538,10 +541,13 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+
+        JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+
         if [ -n "${{ inputs.target }}" ]; then
-          cmake --build "${{ inputs.build-dir }}" --target "${{ inputs.target }}" --parallel
+          ninja -C "${{ inputs.build-dir }}" -j"${JOBS}" "${{ inputs.target }}"
         else
-          cmake --build "${{ inputs.build-dir }}" --parallel
+          ninja -C "${{ inputs.build-dir }}" -j"${JOBS}"
         fi
 
     ###########################################################################
