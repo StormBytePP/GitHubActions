@@ -102,19 +102,24 @@ runs:
 
         echo "has_submodules=true" >> "$GITHUB_OUTPUT"
 
+        # Cache key must depend only on submodule identity, not on the parent
+        # commit. Including HEAD made the key unique per parent SHA and caused
+        # near-zero hit rates on normal pushes, rebases, and force-pushes.
+        # Safe because we always run `git submodule update --force` after restore.
         LINKS="$(git ls-tree -r HEAD | awk '$2 == "commit" { print $3 " " $4 }' | sort)"
         MOD="$(git show HEAD:.gitmodules 2>/dev/null || true)"
-        HEAD_SHA="$(git rev-parse HEAD)"
 
         if command -v sha256sum >/dev/null 2>&1; then
-          HASH="$(printf '%s\n%s\n%s\n' "$LINKS" "$MOD" "$HEAD_SHA" | sha256sum | awk '{print substr($1,1,24)}')"
+          HASH="$(printf '%s\n%s\n' "$LINKS" "$MOD" | sha256sum | awk '{print substr($1,1,24)}')"
         else
-          HASH="$(printf '%s\n%s\n%s\n' "$LINKS" "$MOD" "$HEAD_SHA" | shasum -a 256 | awk '{print substr($1,1,24)}')"
+          HASH="$(printf '%s\n%s\n' "$LINKS" "$MOD" | shasum -a 256 | awk '{print substr($1,1,24)}')"
         fi
 
         PREFIX="${{ inputs.cache-key-prefix }}"
         echo "cache_key=${PREFIX}-${HASH}" >> "$GITHUB_OUTPUT"
         echo "cache_key=${PREFIX}-${HASH}"
+        echo "Submodule cache identity (gitlinks + .gitmodules):"
+        printf '%s\n' "$LINKS"
 
         {
           echo "cache_paths<<EOF"
@@ -178,7 +183,7 @@ runs:
           fi
           # Known transient / network flakiness
           if echo "$log" | grep -Eiq \
-            'returned error: 502|returned error: 503|returned error: 504|returned error: 429|HTTP[[:space:]]*502|HTTP[[:space:]]*503|HTTP[[:space:]]*504|HTTP[[:space:]]*429|timed out|timeout|Connection timed out|Connection reset|Connection refused|Could not resolve host|Temporary failure|SSL connection|Unable to access|Failed to connect|network is unreachable| Priming|empty reply from server|RPC failed|early EOF|expected flush after'; then
+            'returned error: 502|returned error: 503|returned error: 504|returned error: 429|HTTP[[:space:]]*502|HTTP[[:space:]]*503|HTTP[[:space:]]*504|HTTP[[:space:]]*429|timed out|timeout|Connection timed out|Connection reset|Connection refused|Could not resolve host|Temporary failure|SSL connection|Unable to access|Failed to connect|network is unreachable|empty reply from server|RPC failed|early EOF|expected flush after'; then
             return 0
           fi
           # Unknown: retry once policy — treat as transient to avoid false permanent
