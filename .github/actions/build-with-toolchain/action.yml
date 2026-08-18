@@ -13,11 +13,9 @@ inputs:
   ccache-key:
     description: >
       Non-empty enables compiler caching. Used as a version/namespace suffix
-      (e.g. "v1"). The real Actions key is per-OS + toolchain + this suffix +
-      a hash of configure-options/build-type/target so matrix profiles do not
-      overwrite each other on restore. Do not put only "v1" if two jobs share
-      the same options but you still need separate caches — change options or
-      the suffix.
+      (e.g. "v1"). The real Actions key is per-OS + toolchain + this suffix.
+      Jobs that share the same OS + toolchain + suffix will share the same
+      cache (no extra hashing of configure-options/build-type/target).
     required: false
     default: ""
 
@@ -126,36 +124,15 @@ runs:
           echo "CCACHE_DIR=${CCACHE_DIR}"
         fi
 
-        # Profile fingerprint: jobs with different configure/type/target must
-        # NOT share the same restore prefix (otherwise the last job to finish
-        # wins and a thin SYSTEM cache can hide a fat BUNDLED one).
-        VARIANT="$(
-          printf '%s\0%s\0%s' \
-            "${{ inputs.configure-options }}" \
-            "${{ inputs.build-type }}" \
-            "${{ inputs.target }}" \
-          | sha256sum 2>/dev/null | cut -c1-12 \
-          || printf '%s\0%s\0%s' \
-            "${{ inputs.configure-options }}" \
-            "${{ inputs.build-type }}" \
-            "${{ inputs.target }}" \
-          | shasum -a 256 | cut -c1-12
-        )"
+        # Strict key: only OS + toolchain + the exact suffix provided by the user.
+        # No hashing of configure-options / build-type / target.
+        KEY="${PREFIX}-${OS}-${TOOL}-${SUFFIX}"
 
-        # BASE is the stable lineage for this OS + toolchain + namespace + profile.
-        # SAVE is unique per workflow run so parallel identical jobs do not collide.
-        BASE="${PREFIX}-${OS}-${TOOL}-${SUFFIX}-${VARIANT}"
-        SAVE="${BASE}-${GITHUB_RUN_ID}"
+        echo "cache_key=${KEY}" >> "$GITHUB_OUTPUT"
 
-        echo "base_key=${BASE}" >> "$GITHUB_OUTPUT"
-        echo "save_key=${SAVE}" >> "$GITHUB_OUTPUT"
+        echo "CACHE_KEY=${KEY}" >> "$GITHUB_ENV"
 
-        echo "BASE_KEY=${BASE}" >> "$GITHUB_ENV"
-        echo "SAVE_KEY=${SAVE}" >> "$GITHUB_ENV"
-
-        echo "Compiler cache BASE=${BASE}"
-        echo "Compiler cache SAVE=${SAVE}"
-        echo "Compiler cache VARIANT=${VARIANT}"
+        echo "Compiler cache KEY=${KEY}"
 
     ###########################################################################
     # 1. INSTALL TOOLCHAIN
@@ -279,18 +256,14 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: ${{ env.CCACHE_DIR }}
-        key: ${{ steps.cachekeys.outputs.save_key }}
-        restore-keys: |
-          ${{ steps.cachekeys.outputs.base_key }}-
+        key: ${{ steps.cachekeys.outputs.cache_key }}
 
     - name: Restore sccache
       if: inputs.ccache-key != '' && runner.os == 'Windows'
       uses: actions/cache/restore@v4
       with:
         path: ${{ env.SCCACHE_DIR }}
-        key: ${{ steps.cachekeys.outputs.save_key }}
-        restore-keys: |
-          ${{ steps.cachekeys.outputs.base_key }}-
+        key: ${{ steps.cachekeys.outputs.cache_key }}
 
     ###########################################################################
     # 1d. WINDOWS: drop GNU link.exe shadows + clean __VSCMD_PREINIT_PATH
@@ -602,17 +575,17 @@ runs:
     # 6. SAVE COMPILER CACHE
     ###########################################################################
     - name: Save ccache
-      if: success() && (runner.os == 'Linux' || runner.os == 'macOS') && inputs.ccache-key != ''
+      if: always() && (runner.os == 'Linux' || runner.os == 'macOS') && inputs.ccache-key != ''
       continue-on-error: true
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CCACHE_DIR }}
-        key: ${{ steps.cachekeys.outputs.save_key }}
+        key: ${{ steps.cachekeys.outputs.cache_key }}
 
     - name: Save sccache
-      if: success() && runner.os == 'Windows' && inputs.ccache-key != ''
+      if: always() && runner.os == 'Windows' && inputs.ccache-key != ''
       continue-on-error: true
       uses: actions/cache/save@v4
       with:
         path: ${{ env.SCCACHE_DIR }}
-        key: ${{ steps.cachekeys.outputs.save_key }}
+        key: ${{ steps.cachekeys.outputs.cache_key }}
