@@ -138,7 +138,7 @@ runs:
           echo "${PREFIX}/bin" >> "$GITHUB_PATH"
           echo "PATH += ${PREFIX}/bin"
         else
-          # Versioned llvm is keg-only; unversioned `llvm` may not match llvm@N
+          # Versioned llvm is keg-only
           if PREFIX="$(brew --prefix "llvm@${{ env.CLANG_VERSION }}" 2>/dev/null)"; then
             :
           elif PREFIX="$(brew --prefix llvm 2>/dev/null)"; then
@@ -147,18 +147,11 @@ runs:
             echo "::error::Could not resolve Homebrew llvm prefix"
             exit 1
           fi
-
           echo "${PREFIX}/bin" >> "$GITHUB_PATH"
-          export PATH="${PREFIX}/bin:$PATH"
           echo "PATH += ${PREFIX}/bin"
-
-          if ! command -v ld.lld >/dev/null 2>&1 && ! command -v lld >/dev/null 2>&1; then
-            echo "::error::lld not found under ${PREFIX}/bin after installing llvm"
-            ls -la "${PREFIX}/bin" | head -50 || true
-            exit 1
-          fi
-          echo "ld.lld: $(command -v ld.lld 2>/dev/null || true)"
-          echo "lld:    $(command -v lld 2>/dev/null || true)"
+          command -v clang >/dev/null
+          echo "clang: $(command -v clang)"
+          # Homebrew llvm bottles often omit lld; macOS uses the system linker (ld64).
         fi
 
     ###########################################################################
@@ -212,7 +205,7 @@ runs:
         esac
 
     ###########################################################################
-    # 4. WINDOWS – MSVC env + sccache binary (pinned release, not choco)
+    # 4. WINDOWS – MSVC env + sccache binary (pinned release)
     ###########################################################################
     - name: Setup MSVC environment
       if: runner.os == 'Windows'

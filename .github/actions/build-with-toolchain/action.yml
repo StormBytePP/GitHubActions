@@ -119,13 +119,11 @@ runs:
           echo "CCACHE_DIR=${CCACHE_DIR}"
         fi
 
-        # Compiler cache key (ccache on Linux/macOS, sccache on Windows)
         KEY="${PREFIX}-${OS}-${TOOL}-${SUFFIX}"
         echo "cache_key=${KEY}" >> "$GITHUB_OUTPUT"
         echo "CACHE_KEY=${KEY}" >> "$GITHUB_ENV"
         echo "Compiler cache KEY=${KEY}"
 
-        # Downloads cache: same scope, neutral prefix (no ccache/sccache in the name)
         DL_KEY="buildmaster-downloads-${OS}-${TOOL}-${SUFFIX}"
         echo "downloads_cache_key=${DL_KEY}" >> "$GITHUB_OUTPUT"
         echo "Downloads cache KEY=${DL_KEY}"
@@ -171,7 +169,7 @@ runs:
         fi
 
     ###########################################################################
-    # 1. INSTALL TOOLCHAIN (install only)
+    # 1. INSTALL TOOLCHAIN
     ###########################################################################
     - name: Install toolchain
       id: toolchain
@@ -243,10 +241,10 @@ runs:
         fi
 
     ###########################################################################
-    # 1b. FORCE LLD FOR CLANG (Linux + macOS)
+    # 1b. FORCE LLD FOR CLANG (Linux only — macOS uses system ld64)
     ###########################################################################
     - name: Force lld for Clang
-      if: runner.os != 'Windows' && (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++')
+      if: runner.os == 'Linux' && (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++')
       shell: bash
       run: |
         set -euo pipefail
@@ -398,19 +396,21 @@ runs:
           ccache -s || true
         fi
 
+        # lld only on Linux (Homebrew llvm often has no lld; macOS uses system ld64)
         LINKER_ARGS=()
-        case "${{ inputs.toolchain }}" in
-          clang|clang-libc++)
-            LINKER_ARGS+=(
-              -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
-              -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld
-              -DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld
-            )
-            echo "Using lld for toolchain=${{ inputs.toolchain }}"
-            ;;
-        esac
+        if [ "${{ runner.os }}" = "Linux" ]; then
+          case "${{ inputs.toolchain }}" in
+            clang|clang-libc++)
+              LINKER_ARGS+=(
+                -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
+                -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld
+                -DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld
+              )
+              echo "Using lld for toolchain=${{ inputs.toolchain }}"
+              ;;
+          esac
+        fi
 
-        # ${arr[@]+"${arr[@]}"} is safe with set -u on macOS bash 3.2 (empty arrays)
         # shellcheck disable=SC2086
         cmake -S . -B "${{ inputs.build-dir }}" \
           -G Ninja \
