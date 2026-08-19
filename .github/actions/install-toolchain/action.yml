@@ -132,10 +132,33 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+
         if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
-          echo "$(brew --prefix gcc@${{ env.GCC_VERSION }})/bin" >> "$GITHUB_PATH"
+          PREFIX="$(brew --prefix "gcc@${{ env.GCC_VERSION }}")"
+          echo "${PREFIX}/bin" >> "$GITHUB_PATH"
+          echo "PATH += ${PREFIX}/bin"
         else
-          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          # Versioned llvm is keg-only; unversioned `llvm` may not match llvm@N
+          if PREFIX="$(brew --prefix "llvm@${{ env.CLANG_VERSION }}" 2>/dev/null)"; then
+            :
+          elif PREFIX="$(brew --prefix llvm 2>/dev/null)"; then
+            :
+          else
+            echo "::error::Could not resolve Homebrew llvm prefix"
+            exit 1
+          fi
+
+          echo "${PREFIX}/bin" >> "$GITHUB_PATH"
+          export PATH="${PREFIX}/bin:$PATH"
+          echo "PATH += ${PREFIX}/bin"
+
+          if ! command -v ld.lld >/dev/null 2>&1 && ! command -v lld >/dev/null 2>&1; then
+            echo "::error::lld not found under ${PREFIX}/bin after installing llvm"
+            ls -la "${PREFIX}/bin" | head -50 || true
+            exit 1
+          fi
+          echo "ld.lld: $(command -v ld.lld 2>/dev/null || true)"
+          echo "lld:    $(command -v lld 2>/dev/null || true)"
         fi
 
     ###########################################################################
