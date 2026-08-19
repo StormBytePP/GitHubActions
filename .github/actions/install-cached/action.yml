@@ -1,7 +1,7 @@
 name: "Cache and Install Packages"
 description: >
   Install packages with platform-native managers and caching where it matters.
-  - Linux: APT with deterministic .deb cache (restore → download-only → install → save)
+  - Linux: optional APT lists cache (shared with update-apt-cached) + optional .deb cache
   - Windows: Chocolatey (+ common tool dirs on PATH)
   - macOS: Homebrew
 author: "David C. Manuelda"
@@ -16,16 +16,30 @@ inputs:
 
   cache-key:
     description: >
-      Cache key prefix (Linux APT .deb cache only). Empty disables caching.
-      On Windows/macOS this input is ignored (no package cache implemented there).
+      Linux .deb cache prefix. Empty disables deb caching.
+      Independent from lists-cache-key. Ignored on Windows/macOS.
     required: false
     default: ""
 
+  lists-cache-key:
+    description: >
+      Linux APT lists cache base key (must match update-apt-cached).
+      Empty disables lists restore/skip-update (each job runs apt-get update).
+      Default apt-lists aligns with update-apt-cached.
+    required: false
+    default: "apt-lists"
+
+  rotate-weekly:
+    description: >
+      If true, append UTC ISO week (YYYY-Www) to lists-cache-key
+      (must match update-apt-cached).
+    required: false
+    default: "true"
+
   unique:
     description: >
-      Linux only. If true (default), use cache-key as-is.
-      If false, append a hash of the normalized package list to avoid collisions
-      when the same prefix is reused with different package sets.
+      Linux deb cache only. If true (default), use cache-key as-is.
+      If false, append a hash of the normalized package list.
     required: false
     default: "true"
 
@@ -127,7 +141,6 @@ runs:
 
         echo "Installing packages with Homebrew: $PKGS"
 
-        # Prefer versioned formulas when requested; fall back for llvm@N if missing
         for pkg in $PKGS; do
           if brew install "$pkg"; then
             echo "Installed: $pkg"
@@ -146,7 +159,7 @@ runs:
         done
 
     ###########################################################################
-    # LINUX → APT (with deterministic .deb cache)
+    # LINUX → APT (lists from update-apt-cached + optional .deb cache)
     ###########################################################################
     - name: Normalize package list (Linux)
       if: runner.os == 'Linux'
@@ -165,7 +178,81 @@ runs:
           echo "empty=false" >> "$GITHUB_OUTPUT"
         fi
 
-    - name: Prepare APT cache key and directory
+    - name: Resolve APT lists cache (Linux)
+      if: runner.os == 'Linux'
+      id: lists
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        BASE="$(echo "${{ inputs.lists-cache-key }}" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+
+        if [ -z "$BASE" ]; then
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          echo "lists-cache-key empty – will apt-get update locally if needed"
+          exit 0
+        fi
+
+        if [ "${{ inputs.rotate-weekly }}" = "true" ]; then
+          WEEK="$(date -u +%G-W%V)"
+          KEY="${BASE}-${WEEK}"
+        else
+          KEY="${BASE}"
+        fi
+
+        LISTS_DIR="$HOME/apt-cache/${KEY}/lists"
+        mkdir -p "$LISTS_DIR"
+
+        echo "enabled=true" >> "$GITHUB_OUTPUT"
+        echo "lists_key=${KEY}" >> "$GITHUB_OUTPUT"
+        echo "lists_dir=${LISTS_DIR}" >> "$GITHUB_OUTPUT"
+        echo "LISTS_KEY=${KEY}" >> "$GITHUB_ENV"
+        echo "LISTS_DIR=${LISTS_DIR}" >> "$GITHUB_ENV"
+        echo "APT lists key: ${KEY}"
+
+    - name: Restore APT lists cache
+      if: runner.os == 'Linux' && steps.lists.outputs.enabled == 'true'
+      id: restore-lists
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.lists.outputs.lists_dir }}
+        key: ${{ steps.lists.outputs.lists_key }}
+
+    - name: Seed APT lists or update
+      if: runner.os == 'Linux' && steps.pkgs.outputs.empty != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ "${APT_LISTS_FRESH:-0}" = "1" ]; then
+          echo "APT lists already fresh in this job; skipping update"
+          exit 0
+        fi
+
+        sudo mkdir -p /var/lib/apt/lists/partial
+
+        NEED_UPDATE=1
+
+        if [ "${{ steps.lists.outputs.enabled }}" = "true" ]; then
+          LISTS_DIR="${{ steps.lists.outputs.lists_dir }}"
+          if compgen -G "${LISTS_DIR}/*" > /dev/null; then
+            echo "Seeding /var/lib/apt/lists from ${LISTS_DIR}..."
+            sudo find "${LISTS_DIR}" -maxdepth 1 -type f -exec cp -n {} /var/lib/apt/lists/ \;
+            if sudo find /var/lib/apt/lists -maxdepth 1 -type f -name '*_Packages' | grep -q .; then
+              NEED_UPDATE=0
+              echo "Restored lists usable; skipping apt-get update"
+            fi
+          fi
+        fi
+
+        if [ "$NEED_UPDATE" = "1" ]; then
+          echo "Running apt-get update..."
+          sudo apt-get update -qq
+        fi
+
+        echo "APT_LISTS_FRESH=1" >> "$GITHUB_ENV"
+
+    - name: Prepare APT deb cache paths
       if: runner.os == 'Linux' && inputs.cache-key != '' && steps.pkgs.outputs.empty != 'true'
       id: prep
       shell: bash
@@ -173,74 +260,66 @@ runs:
         set -euo pipefail
 
         PACKAGES_NORMALIZED="${{ steps.pkgs.outputs.packages }}"
+        PREFIX="$(echo "${{ inputs.cache-key }}" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
 
         if [ "${{ inputs.unique }}" = "true" ]; then
-          CACHE_KEY="${{ inputs.cache-key }}"
-          CACHE_DIR="$HOME/apt-cache/${{ inputs.cache-key }}"
+          DEBS_KEY="${PREFIX}"
+          DEBS_DIR="$HOME/apt-cache/debs/${PREFIX}"
         else
           HASH="$(echo -n "$PACKAGES_NORMALIZED" | sha256sum | cut -c1-16)"
-          CACHE_KEY="${{ inputs.cache-key }}-${HASH}"
-          CACHE_DIR="$HOME/apt-cache/${{ inputs.cache-key }}-${HASH}"
+          DEBS_KEY="${PREFIX}-${HASH}"
+          DEBS_DIR="$HOME/apt-cache/debs/${PREFIX}-${HASH}"
         fi
 
-        mkdir -p "$CACHE_DIR"
+        mkdir -p "$DEBS_DIR"
 
-        echo "CACHE_KEY=${CACHE_KEY}" >> "$GITHUB_ENV"
-        echo "CACHE_DIR=${CACHE_DIR}" >> "$GITHUB_ENV"
-        echo "cache_key=${CACHE_KEY}" >> "$GITHUB_OUTPUT"
-        echo "cache_dir=${CACHE_DIR}" >> "$GITHUB_OUTPUT"
+        echo "DEBS_KEY=${DEBS_KEY}" >> "$GITHUB_ENV"
+        echo "DEBS_DIR=${DEBS_DIR}" >> "$GITHUB_ENV"
+        echo "debs_key=${DEBS_KEY}" >> "$GITHUB_OUTPUT"
+        echo "APT debs key: ${DEBS_KEY}"
 
-        echo "APT cache key: ${CACHE_KEY}"
-        echo "APT cache dir: ${CACHE_DIR}"
-
-    - name: Restore APT cache
+    - name: Restore APT debs cache
       if: runner.os == 'Linux' && inputs.cache-key != '' && steps.pkgs.outputs.empty != 'true'
-      id: restore
+      id: restore-debs
       uses: actions/cache/restore@v4
       with:
-        path: ${{ env.CACHE_DIR }}
-        key: ${{ env.CACHE_KEY }}
+        path: ${{ env.DEBS_DIR }}
+        key: ${{ env.DEBS_KEY }}
 
-    - name: Seed system APT archives from cache
+    - name: Seed system APT archives from deb cache
       if: runner.os == 'Linux' && inputs.cache-key != '' && steps.pkgs.outputs.empty != 'true'
       shell: bash
       run: |
         set -euo pipefail
 
-        echo "Seeding /var/cache/apt/archives from ${CACHE_DIR}..."
+        echo "Seeding /var/cache/apt/archives from ${DEBS_DIR}..."
         sudo mkdir -p /var/cache/apt/archives/partial
 
-        if compgen -G "${CACHE_DIR}/*.deb" > /dev/null; then
-          # -n: do not overwrite newer local files
-          sudo cp -n "${CACHE_DIR}"/*.deb /var/cache/apt/archives/ || true
-          echo "Restored $(ls -1 "${CACHE_DIR}"/*.deb 2>/dev/null | wc -l) deb(s) into system APT cache"
+        if compgen -G "${DEBS_DIR}/*.deb" > /dev/null; then
+          sudo cp -n "${DEBS_DIR}"/*.deb /var/cache/apt/archives/ || true
+          echo "Restored $(ls -1 "${DEBS_DIR}"/*.deb 2>/dev/null | wc -l) deb(s)"
         else
-          echo "No .deb files in cache directory"
+          echo "No .deb files in deb cache"
         fi
 
-    - name: Update APT and download packages
+    - name: Download APT packages
       if: runner.os == 'Linux' && steps.pkgs.outputs.empty != 'true'
       shell: bash
       run: |
         set -euo pipefail
 
         PACKAGES="${{ steps.pkgs.outputs.packages }}"
-        echo "apt-get update..."
-        sudo apt-get update -qq
-
-        echo "Downloading packages (install deferred): ${PACKAGES}"
+        echo "Downloading packages: ${PACKAGES}"
         # shellcheck disable=SC2086
-        sudo apt-get install --download-only -y ${PACKAGES}
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install --download-only -y ${PACKAGES}
 
-        if [ -n "${CACHE_DIR:-}" ]; then
-          echo "Copying archives into cache dir: ${CACHE_DIR}"
-          mkdir -p "${CACHE_DIR}"
+        if [ -n "${DEBS_DIR:-}" ]; then
+          mkdir -p "${DEBS_DIR}"
           shopt -s nullglob
           for deb in /var/cache/apt/archives/*.deb; do
-            cp -n "$deb" "${CACHE_DIR}/" 2>/dev/null || true
+            cp -n "$deb" "${DEBS_DIR}/" 2>/dev/null || true
           done
           shopt -u nullglob
-          echo "Cache dir now has $(ls -1 "${CACHE_DIR}"/*.deb 2>/dev/null | wc -l) deb(s)"
         fi
 
     - name: Install APT packages
@@ -254,13 +333,13 @@ runs:
         # shellcheck disable=SC2086
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ${PACKAGES}
 
-    - name: Save APT cache
+    - name: Save APT debs cache
       if: >-
         runner.os == 'Linux'
         && inputs.cache-key != ''
         && steps.pkgs.outputs.empty != 'true'
-        && steps.restore.outputs.cache-hit != 'true'
+        && steps.restore-debs.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
-        path: ${{ env.CACHE_DIR }}
-        key: ${{ env.CACHE_KEY }}
+        path: ${{ env.DEBS_DIR }}
+        key: ${{ env.DEBS_KEY }}

@@ -1,0 +1,125 @@
+name: "Update APT lists (cached)"
+description: >
+  Linux only. Refresh and cache APT package indexes (no package install).
+  If cache-key is empty, this is a no-op (bypass: callers update on their own).
+  With a non-empty cache-key, restores/saves lists for other jobs (e.g. install-cached).
+author: "David C. Manuelda"
+branding:
+  icon: "database"
+  color: "yellow"
+
+inputs:
+  cache-key:
+    description: >
+      Base cache key (e.g. apt-lists). Empty disables caching entirely (no-op).
+      When rotate-weekly=true, UTC ISO week (YYYY-Www) is appended.
+    required: false
+    default: "apt-lists"
+
+  rotate-weekly:
+    description: "If true, append UTC ISO week (YYYY-Www) to the cache key."
+    required: false
+    default: "true"
+
+runs:
+  using: "composite"
+  steps:
+
+    - name: Skip on non-Linux
+      if: runner.os != 'Linux'
+      shell: bash
+      run: echo "update-apt-cached is a no-op on ${{ runner.os }}"
+
+    - name: Resolve cache key and directory
+      if: runner.os == 'Linux'
+      id: meta
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        BASE="$(echo "${{ inputs.cache-key }}" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+
+        if [ -z "$BASE" ]; then
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          echo "cache-key is empty – bypass (no lists cache; other jobs update on their own)"
+          exit 0
+        fi
+
+        if [ "${{ inputs.rotate-weekly }}" = "true" ]; then
+          WEEK="$(date -u +%G-W%V)"
+          KEY="${BASE}-${WEEK}"
+        else
+          KEY="${BASE}"
+        fi
+
+        LISTS_DIR="$HOME/apt-cache/${KEY}/lists"
+        mkdir -p "$LISTS_DIR"
+
+        echo "enabled=true" >> "$GITHUB_OUTPUT"
+        echo "lists_key=${KEY}" >> "$GITHUB_OUTPUT"
+        echo "lists_dir=${LISTS_DIR}" >> "$GITHUB_OUTPUT"
+
+        echo "LISTS_KEY=${KEY}" >> "$GITHUB_ENV"
+        echo "LISTS_DIR=${LISTS_DIR}" >> "$GITHUB_ENV"
+
+        echo "APT lists cache key: ${KEY}"
+        echo "APT lists cache dir: ${LISTS_DIR}"
+
+    - name: Restore APT lists cache
+      if: runner.os == 'Linux' && steps.meta.outputs.enabled == 'true'
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.meta.outputs.lists_dir }}
+        key: ${{ steps.meta.outputs.lists_key }}
+
+    - name: Seed or update APT lists
+      if: runner.os == 'Linux' && steps.meta.outputs.enabled == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        LISTS_DIR="${{ steps.meta.outputs.lists_dir }}"
+
+        sudo mkdir -p /var/lib/apt/lists/partial
+
+        SEEDED=0
+        if compgen -G "${LISTS_DIR}/*" > /dev/null; then
+          echo "Seeding /var/lib/apt/lists from ${LISTS_DIR}..."
+          sudo find "${LISTS_DIR}" -maxdepth 1 -type f -exec cp -n {} /var/lib/apt/lists/ \;
+          SEEDED=1
+        fi
+
+        NEED_UPDATE=1
+        if [ "$SEEDED" = "1" ]; then
+          if sudo find /var/lib/apt/lists -maxdepth 1 -type f -name '*_Packages' | grep -q .; then
+            NEED_UPDATE=0
+            echo "Restored lists look usable; skipping apt-get update"
+          fi
+        fi
+
+        if [ "$NEED_UPDATE" = "1" ]; then
+          echo "Running apt-get update..."
+          sudo apt-get update -qq
+
+          echo "Saving lists into ${LISTS_DIR}..."
+          mkdir -p "${LISTS_DIR}"
+          sudo find /var/lib/apt/lists -maxdepth 1 -type f -exec cp -n {} "${LISTS_DIR}/" \;
+          sudo chown -R "$(id -u):$(id -g)" "${LISTS_DIR}" || true
+          echo "lists_updated=true" >> "$GITHUB_ENV"
+        else
+          echo "lists_updated=false" >> "$GITHUB_ENV"
+        fi
+
+        echo "APT_LISTS_FRESH=1" >> "$GITHUB_ENV"
+
+    - name: Save APT lists cache
+      if: >-
+        runner.os == 'Linux'
+        && steps.meta.outputs.enabled == 'true'
+        && steps.restore.outputs.cache-hit != 'true'
+        && env.lists_updated == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ steps.meta.outputs.lists_dir }}
+        key: ${{ steps.meta.outputs.lists_key }}
