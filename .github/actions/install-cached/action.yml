@@ -237,7 +237,7 @@ runs:
           LISTS_DIR="${{ steps.lists.outputs.lists_dir }}"
           if compgen -G "${LISTS_DIR}/*" > /dev/null; then
             echo "Seeding /var/lib/apt/lists from ${LISTS_DIR}..."
-            sudo find "${LISTS_DIR}" -maxdepth 1 -type f -exec cp -n {} /var/lib/apt/lists/ \;
+            sudo find "${LISTS_DIR}" -maxdepth 1 -type f -exec cp --update=none {} /var/lib/apt/lists/ \;
             if sudo find /var/lib/apt/lists -maxdepth 1 -type f -name '*_Packages' | grep -q .; then
               NEED_UPDATE=0
               echo "Restored lists usable; skipping apt-get update"
@@ -296,7 +296,7 @@ runs:
         sudo mkdir -p /var/cache/apt/archives/partial
 
         if compgen -G "${DEBS_DIR}/*.deb" > /dev/null; then
-          sudo cp -n "${DEBS_DIR}"/*.deb /var/cache/apt/archives/ || true
+          sudo cp --update=none "${DEBS_DIR}"/*.deb /var/cache/apt/archives/ || true
           echo "Restored $(ls -1 "${DEBS_DIR}"/*.deb 2>/dev/null | wc -l) deb(s)"
         else
           echo "No .deb files in deb cache"
@@ -317,7 +317,7 @@ runs:
           mkdir -p "${DEBS_DIR}"
           shopt -s nullglob
           for deb in /var/cache/apt/archives/*.deb; do
-            cp -n "$deb" "${DEBS_DIR}/" 2>/dev/null || true
+            cp --update=none "$deb" "${DEBS_DIR}/" 2>/dev/null || true
           done
           shopt -u nullglob
         fi

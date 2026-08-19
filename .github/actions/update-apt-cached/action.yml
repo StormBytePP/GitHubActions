@@ -86,7 +86,7 @@ runs:
         SEEDED=0
         if compgen -G "${LISTS_DIR}/*" > /dev/null; then
           echo "Seeding /var/lib/apt/lists from ${LISTS_DIR}..."
-          sudo find "${LISTS_DIR}" -maxdepth 1 -type f -exec cp -n {} /var/lib/apt/lists/ \;
+          sudo find "${LISTS_DIR}" -maxdepth 1 -type f -exec cp --update=none {} /var/lib/apt/lists/ \;
           SEEDED=1
         fi
 
@@ -104,7 +104,7 @@ runs:
 
           echo "Saving lists into ${LISTS_DIR}..."
           mkdir -p "${LISTS_DIR}"
-          sudo find /var/lib/apt/lists -maxdepth 1 -type f -exec cp -n {} "${LISTS_DIR}/" \;
+          sudo find /var/lib/apt/lists -maxdepth 1 -type f -exec cp --update=none {} "${LISTS_DIR}/" \;
           sudo chown -R "$(id -u):$(id -g)" "${LISTS_DIR}" || true
           echo "lists_updated=true" >> "$GITHUB_ENV"
         else
