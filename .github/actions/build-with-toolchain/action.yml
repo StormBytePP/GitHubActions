@@ -124,15 +124,51 @@ runs:
           echo "CCACHE_DIR=${CCACHE_DIR}"
         fi
 
-        # Strict key: only OS + toolchain + the exact suffix provided by the user.
-        # No hashing of configure-options / build-type / target.
         KEY="${PREFIX}-${OS}-${TOOL}-${SUFFIX}"
 
         echo "cache_key=${KEY}" >> "$GITHUB_OUTPUT"
-
         echo "CACHE_KEY=${KEY}" >> "$GITHUB_ENV"
-
         echo "Compiler cache KEY=${KEY}"
+
+    ###########################################################################
+    # 0b. DETECT STORMBYTE-BUILDMASTER
+    ###########################################################################
+    - name: Detecting StormByte-BuildMaster
+      id: buildmaster
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        DETECTED="false"
+        DOWNLOADS_DIR=""
+        DOWNLOADS_REL=""
+
+        if [ -f .gitmodules ]; then
+          while IFS= read -r -d '' key; do
+            path=$(git config -f .gitmodules --get "$key")
+            name="${key#submodule.}"
+            name="${name%.path}"
+            url=$(git config -f .gitmodules --get "submodule.${name}.url" 2>/dev/null || true)
+
+            if echo "$name" | grep -qiE 'StormByte-BuildMaster|BuildMaster|Build Master' || \
+               echo "$url"  | grep -qiE 'StormByte-BuildMaster|StormBytePP/StormByte-BuildMaster'; then
+              DETECTED="true"
+              DOWNLOADS_REL="${path}/downloads"
+              DOWNLOADS_DIR="${{ inputs.build-dir }}/${DOWNLOADS_REL}"
+              break
+            fi
+          done < <(git config -f .gitmodules --null --name-only --get-regexp 'submodule\..*\.path' 2>/dev/null || true)
+        fi
+
+        if [ "$DETECTED" = "true" ]; then
+          echo "StormByte-BuildMaster detected, creating download cache for ${DOWNLOADS_REL}"
+          echo "detected=true" >> "$GITHUB_OUTPUT"
+          echo "downloads_dir=${DOWNLOADS_DIR}" >> "$GITHUB_OUTPUT"
+        else
+          echo "StormByte-BuildMaster not detected, skipping download cache creation."
+          echo "detected=false" >> "$GITHUB_OUTPUT"
+          echo "downloads_dir=" >> "$GITHUB_OUTPUT"
+        fi
 
     ###########################################################################
     # 1. INSTALL TOOLCHAIN
@@ -266,22 +302,21 @@ runs:
         key: ${{ steps.cachekeys.outputs.cache_key }}
 
     ###########################################################################
-    # 1c2. RESTORE DOWNLOADS CACHE
+    # 1c2. RESTORE + PREPARE DOWNLOADS CACHE (only if BuildMaster detected)
     ###########################################################################
     - name: Restore downloads cache
-      if: inputs.ccache-key != ''
+      if: inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
       uses: actions/cache/restore@v4
       with:
-        path: ${{ inputs.build-dir }}/thirdparty/buildmaster/downloads
+        path: ${{ steps.buildmaster.outputs.downloads_dir }}
         key: ${{ steps.cachekeys.outputs.cache_key }}-buildmaster-downloads
 
-    # Directory must exist before configure (cache restore happens earlier)
     - name: Ensure downloads directory exists
-      if: inputs.ccache-key != ''
+      if: inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
       shell: bash
       run: |
-        mkdir -p "${{ inputs.build-dir }}/thirdparty/buildmaster/downloads"
-        echo "Downloads directory ready: ${{ inputs.build-dir }}/thirdparty/buildmaster/downloads"
+        mkdir -p "${{ steps.buildmaster.outputs.downloads_dir }}"
+        echo "Downloads directory ready: ${{ steps.buildmaster.outputs.downloads_dir }}"
 
     ###########################################################################
     # 1d. WINDOWS: drop GNU link.exe shadows + clean __VSCMD_PREINIT_PATH
@@ -359,7 +394,7 @@ runs:
         exit 0
 
     ###########################################################################
-    # 2. CONFIGURE (explicit -D launchers = required for parent + BuildMaster)
+    # 2. CONFIGURE
     ###########################################################################
     - name: Configure CMake (Linux/macOS)
       if: runner.os != 'Windows'
@@ -609,12 +644,12 @@ runs:
         key: ${{ steps.cachekeys.outputs.cache_key }}
 
     ###########################################################################
-    # 7. SAVE DOWNLOADS CACHE
+    # 7. SAVE DOWNLOADS CACHE (only on success + BuildMaster detected)
     ###########################################################################
     - name: Save downloads cache
-      if: always() && inputs.ccache-key != ''
+      if: success() && inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
       continue-on-error: true
       uses: actions/cache/save@v4
       with:
-        path: ${{ inputs.build-dir }}/thirdparty/buildmaster/downloads
+        path: ${{ steps.buildmaster.outputs.downloads_dir }}
         key: ${{ steps.cachekeys.outputs.cache_key }}-buildmaster-downloads
