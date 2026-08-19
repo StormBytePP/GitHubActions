@@ -266,6 +266,24 @@ runs:
         key: ${{ steps.cachekeys.outputs.cache_key }}
 
     ###########################################################################
+    # 1c2. RESTORE DOWNLOADS CACHE
+    ###########################################################################
+    - name: Restore downloads cache
+      if: inputs.ccache-key != ''
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ inputs.build-dir }}/thirdparty/buildmaster/downloads
+        key: ${{ steps.cachekeys.outputs.cache_key }}-buildmaster-downloads
+
+    # Directory must exist before configure (cache restore happens earlier)
+    - name: Ensure downloads directory exists
+      if: inputs.ccache-key != ''
+      shell: bash
+      run: |
+        mkdir -p "${{ inputs.build-dir }}/thirdparty/buildmaster/downloads"
+        echo "Downloads directory ready: ${{ inputs.build-dir }}/thirdparty/buildmaster/downloads"
+
+    ###########################################################################
     # 1d. WINDOWS: drop GNU link.exe shadows + clean __VSCMD_PREINIT_PATH
     ###########################################################################
     - name: Sanitize PATH for MSVC linker
@@ -589,3 +607,14 @@ runs:
       with:
         path: ${{ env.SCCACHE_DIR }}
         key: ${{ steps.cachekeys.outputs.cache_key }}
+
+    ###########################################################################
+    # 7. SAVE DOWNLOADS CACHE
+    ###########################################################################
+    - name: Save downloads cache
+      if: always() && inputs.ccache-key != ''
+      continue-on-error: true
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ inputs.build-dir }}/thirdparty/buildmaster/downloads
+        key: ${{ steps.cachekeys.outputs.cache_key }}-buildmaster-downloads
