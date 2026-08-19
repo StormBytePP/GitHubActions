@@ -1,5 +1,5 @@
 name: "Build with Toolchain"
-description: "Install compiler toolchain, build with CMake/Ninja and save compiler cache"
+description: "Configure caches/linkers, build with CMake/Ninja, run tests and save caches"
 author: "David C. Manuelda"
 branding:
   icon: "package"
@@ -14,8 +14,6 @@ inputs:
     description: >
       Non-empty enables compiler caching. Used as a version/namespace suffix
       (e.g. "v1"). The real Actions key is per-OS + toolchain + this suffix.
-      Jobs that share the same OS + toolchain + suffix will share the same
-      cache (no extra hashing of configure-options/build-type/target).
     required: false
     default: ""
 
@@ -60,18 +58,14 @@ inputs:
     default: "false"
 
   install-meson:
-    description: >
-      Install/pin Meson 1.10.0 via pip (required for FFmpeg/libvpx MSVC
-      link tests; newer Meson can inject invalid /release for cl).
+    description: "Install/pin Meson 1.10.0 via pip"
     required: false
     default: "true"
 
   msvc-embedded-debug:
     description: >
-      Windows only. If true (default), pass
-      -DCMAKE_POLICY_DEFAULT_CMP0141=NEW and
-      -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded so MSVC uses /Z7
-      instead of /Zi (avoids PDB races under parallel sccache).
+      Windows only. If true (default), pass CMP0141=NEW and
+      CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded (/Z7).
     required: false
     default: "true"
 
@@ -106,9 +100,10 @@ runs:
         if [ "$OS" = "Windows" ]; then
           PREFIX="sccache"
           if [ -z "${SCCACHE_DIR:-}" ]; then
-            SCCACHE_DIR="${LOCALAPPDATA:-$USERPROFILE/AppData/Local}/Mozilla/sccache/cache"
             if [ -n "${RUNNER_TEMP:-}" ]; then
               SCCACHE_DIR="${RUNNER_TEMP}/sccache"
+            else
+              SCCACHE_DIR="${LOCALAPPDATA:-$USERPROFILE/AppData/Local}/Mozilla/sccache/cache"
             fi
           fi
           mkdir -p "$SCCACHE_DIR"
@@ -124,11 +119,16 @@ runs:
           echo "CCACHE_DIR=${CCACHE_DIR}"
         fi
 
+        # Compiler cache key (ccache on Linux/macOS, sccache on Windows)
         KEY="${PREFIX}-${OS}-${TOOL}-${SUFFIX}"
-
         echo "cache_key=${KEY}" >> "$GITHUB_OUTPUT"
         echo "CACHE_KEY=${KEY}" >> "$GITHUB_ENV"
         echo "Compiler cache KEY=${KEY}"
+
+        # Downloads cache: same scope, neutral prefix (no ccache/sccache in the name)
+        DL_KEY="buildmaster-downloads-${OS}-${TOOL}-${SUFFIX}"
+        echo "downloads_cache_key=${DL_KEY}" >> "$GITHUB_OUTPUT"
+        echo "Downloads cache KEY=${DL_KEY}"
 
     ###########################################################################
     # 0b. DETECT STORMBYTE-BUILDMASTER
@@ -171,22 +171,22 @@ runs:
         fi
 
     ###########################################################################
-    # 1. INSTALL TOOLCHAIN
+    # 1. INSTALL TOOLCHAIN (install only)
     ###########################################################################
     - name: Install toolchain
       id: toolchain
       uses: stormbytepp/githubactions/.github/actions/install-toolchain@master
       with:
         toolchain: ${{ inputs.toolchain }}
-        ccache-key: ${{ inputs.ccache-key != '' && format('{0}-{1}', inputs.toolchain, inputs.ccache-key) || '' }}
+        ccache-key: ${{ inputs.ccache-key }}
         version: ${{ inputs.version }}
         docs: ${{ inputs.docs }}
         install-meson: ${{ inputs.install-meson }}
 
     ###########################################################################
-    # 1a. RE-PIN CACHE DIRS + EXPORT LAUNCHERS FOR BUILDMASTER (ENV fallback)
+    # 1a. CONFIGURE COMPILER CACHE + LAUNCHERS
     ###########################################################################
-    - name: Pin cache dirs and export compiler launchers
+    - name: Configure compiler cache and launchers
       if: inputs.ccache-key != ''
       shell: bash
       run: |
@@ -226,7 +226,14 @@ runs:
           echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> "$GITHUB_ENV"
           echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "$GITHUB_ENV"
 
+          if [ -d /usr/lib/ccache ]; then
+            echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+          elif [ -d /usr/lib64/ccache ]; then
+            echo "/usr/lib64/ccache" >> "$GITHUB_PATH"
+          fi
+
           if command -v ccache >/dev/null 2>&1; then
+            ccache -M 2G || true
             ccache -z || true
             echo "ccache ready (dir=${CCACHE_DIR})"
             ccache -s || true
@@ -236,53 +243,28 @@ runs:
         fi
 
     ###########################################################################
-    # 1b. PIN MESON 1.10.0 (single place — no duplicate install)
+    # 1b. FORCE LLD FOR CLANG (Linux + macOS)
     ###########################################################################
-    - name: Pin Meson 1.10.0
-      if: inputs.install-meson != 'false'
+    - name: Force lld for Clang
+      if: runner.os != 'Windows' && (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++')
       shell: bash
       run: |
         set -euo pipefail
 
-        PY=""
-        for c in python3 python; do
-          if command -v "$c" >/dev/null 2>&1; then
-            PY="$c"
-            break
-          fi
-        done
-        if [ -z "$PY" ]; then
-          echo "python/python3 not found (install-toolchain should set up Python)"
+        if ! command -v ld.lld >/dev/null 2>&1 && ! command -v lld >/dev/null 2>&1; then
+          echo "::error::lld not found on PATH (install-toolchain should provide it)"
           exit 1
         fi
 
-        echo "Using: $($PY -c 'import sys; print(sys.executable)')"
-        $PY -m pip install --upgrade pip
-        $PY -m pip uninstall -y meson 2>/dev/null || true
-        $PY -m pip install --force-reinstall --no-cache-dir 'meson==1.10.0'
+        echo "ld.lld: $(command -v ld.lld 2>/dev/null || true)"
+        echo "lld:    $(command -v lld 2>/dev/null || true)"
 
-        SCRIPTS="$($PY -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
-        if [ -n "$SCRIPTS" ] && [ -d "$SCRIPTS" ]; then
-          echo "$SCRIPTS" >> "$GITHUB_PATH"
-          export PATH="$SCRIPTS:$PATH"
-        fi
+        echo "CMAKE_EXE_LINKER_FLAGS_INIT=-fuse-ld=lld"    >> "$GITHUB_ENV"
+        echo "CMAKE_SHARED_LINKER_FLAGS_INIT=-fuse-ld=lld" >> "$GITHUB_ENV"
+        echo "CMAKE_MODULE_LINKER_FLAGS_INIT=-fuse-ld=lld" >> "$GITHUB_ENV"
+        echo "LDFLAGS=-fuse-ld=lld" >> "$GITHUB_ENV"
 
-        MESON_BIN="$(command -v meson || true)"
-        if [ -z "$MESON_BIN" ]; then
-          echo "meson not on PATH after install"
-          exit 1
-        fi
-
-        VER="$(meson --version | head -n1 | tr -d '\r')"
-        echo "meson at: $MESON_BIN"
-        echo "meson version: $VER"
-        case "$VER" in
-          1.10.0*) ;;
-          *)
-            echo "Expected Meson 1.10.0, got: $VER"
-            exit 1
-            ;;
-        esac
+        echo "Forced -fuse-ld=lld for ${{ inputs.toolchain }}"
 
     ###########################################################################
     # 1c. RESTORE COMPILER CACHE
@@ -302,14 +284,14 @@ runs:
         key: ${{ steps.cachekeys.outputs.cache_key }}
 
     ###########################################################################
-    # 1c2. RESTORE + PREPARE DOWNLOADS CACHE (only if BuildMaster detected)
+    # 1d. RESTORE + PREPARE DOWNLOADS CACHE
     ###########################################################################
     - name: Restore downloads cache
       if: inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
       uses: actions/cache/restore@v4
       with:
         path: ${{ steps.buildmaster.outputs.downloads_dir }}
-        key: ${{ steps.cachekeys.outputs.cache_key }}-buildmaster-downloads
+        key: ${{ steps.cachekeys.outputs.downloads_cache_key }}
 
     - name: Ensure downloads directory exists
       if: inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
@@ -319,7 +301,7 @@ runs:
         echo "Downloads directory ready: ${{ steps.buildmaster.outputs.downloads_dir }}"
 
     ###########################################################################
-    # 1d. WINDOWS: drop GNU link.exe shadows + clean __VSCMD_PREINIT_PATH
+    # 1e. WINDOWS: sanitize PATH for MSVC linker
     ###########################################################################
     - name: Sanitize PATH for MSVC linker
       if: runner.os == 'Windows'
@@ -408,28 +390,35 @@ runs:
         if [ -n "${{ inputs.ccache-key }}" ] && command -v ccache >/dev/null 2>&1; then
           export CCACHE_DIR="${CCACHE_DIR:-${RUNNER_TEMP}/ccache}"
           mkdir -p "${CCACHE_DIR}"
-          echo "CCACHE_DIR=${CCACHE_DIR}" >> "$GITHUB_ENV"
-
           LAUNCHER_ARGS+=(
             -DCMAKE_C_COMPILER_LAUNCHER=ccache
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           )
-          echo "CMAKE_C_COMPILER_LAUNCHER=ccache" >> "$GITHUB_ENV"
-          echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache" >> "$GITHUB_ENV"
-
-          echo "Using ccache as compiler launcher (dir=${CCACHE_DIR})"
+          echo "Using ccache launcher (dir=${CCACHE_DIR})"
           ccache -s || true
-        else
-          echo "ccache launcher disabled or ccache not installed"
         fi
 
+        LINKER_ARGS=()
+        case "${{ inputs.toolchain }}" in
+          clang|clang-libc++)
+            LINKER_ARGS+=(
+              -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
+              -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld
+              -DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld
+            )
+            echo "Using lld for toolchain=${{ inputs.toolchain }}"
+            ;;
+        esac
+
+        # ${arr[@]+"${arr[@]}"} is safe with set -u on macOS bash 3.2 (empty arrays)
         # shellcheck disable=SC2086
         cmake -S . -B "${{ inputs.build-dir }}" \
           -G Ninja \
           -DCMAKE_BUILD_TYPE="${{ inputs.build-type }}" \
           -DCMAKE_C_COMPILER="${{ steps.toolchain.outputs.c_compiler }}" \
           -DCMAKE_CXX_COMPILER="${{ steps.toolchain.outputs.cxx_compiler }}" \
-          "${LAUNCHER_ARGS[@]}" \
+          ${LAUNCHER_ARGS[@]+"${LAUNCHER_ARGS[@]}"} \
+          ${LINKER_ARGS[@]+"${LINKER_ARGS[@]}"} \
           ${CONFIGURE_OPTIONS}
 
     - name: Configure CMake (Windows)
@@ -458,15 +447,8 @@ runs:
           $cmakeArgs.Add("-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded")
         }
 
-        $useSccache = $false
-        if ("${{ inputs.ccache-key }}" -ne "") {
-          if (Get-Command sccache -ErrorAction SilentlyContinue) {
-            $useSccache = $true
-          }
-        }
-
-        if ($useSccache) {
-          Write-Host "Using sccache launcher (explicit -D + ENV for BuildMaster)"
+        if ("${{ inputs.ccache-key }}" -ne "" -and (Get-Command sccache -ErrorAction SilentlyContinue)) {
+          Write-Host "Using sccache launcher"
           $cmakeArgs.Add("-DCMAKE_C_COMPILER_LAUNCHER=sccache")
           $cmakeArgs.Add("-DCMAKE_CXX_COMPILER_LAUNCHER=sccache")
 
@@ -479,11 +461,9 @@ runs:
           }
           New-Item -ItemType Directory -Force -Path $env:SCCACHE_DIR | Out-Null
           "SCCACHE_DIR=$($env:SCCACHE_DIR)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CMAKE_C_COMPILER_LAUNCHER=sccache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CMAKE_CXX_COMPILER_LAUNCHER=sccache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "SCCACHE_DIR=$($env:SCCACHE_DIR)"
         } else {
-          Write-Host "WARNING: sccache not configured – caching disabled"
+          Write-Host "sccache launcher disabled"
         }
 
         $extra = $env:CONFIGURE_OPTIONS
@@ -543,13 +523,6 @@ runs:
         if ($env:__VSCMD_PREINIT_PATH) {
           $env:__VSCMD_PREINIT_PATH = Remove-GnuShadowPaths $env:__VSCMD_PREINIT_PATH
         }
-
-        Write-Host "Build-time linker: $($linkCmd.Source)"
-        if ($linkCmd.Source -notmatch '(?i)[\\/]MSVC[\\/]|HostX64|Hostx64|Visual Studio') {
-          Write-Error "Build step link.exe does not look like MSVC: $($linkCmd.Source)"
-          exit 1
-        }
-        where.exe link
 
         $jobs = [Environment]::ProcessorCount
         if ($jobs -lt 1) { $jobs = 4 }
@@ -644,7 +617,7 @@ runs:
         key: ${{ steps.cachekeys.outputs.cache_key }}
 
     ###########################################################################
-    # 7. SAVE DOWNLOADS CACHE (only on success + BuildMaster detected)
+    # 7. SAVE DOWNLOADS CACHE
     ###########################################################################
     - name: Save downloads cache
       if: success() && inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
@@ -652,4 +625,4 @@ runs:
       uses: actions/cache/save@v4
       with:
         path: ${{ steps.buildmaster.outputs.downloads_dir }}
-        key: ${{ steps.cachekeys.outputs.cache_key }}-buildmaster-downloads
+        key: ${{ steps.cachekeys.outputs.downloads_cache_key }}
