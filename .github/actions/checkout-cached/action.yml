@@ -27,7 +27,7 @@ inputs:
     default: "true"
 
   cache-key-prefix:
-    description: "Prefix for the submodule cache key"
+    description: "Prefix for the submodule cache key (OS is appended automatically)"
     required: false
     default: "git-submodules"
 
@@ -39,7 +39,7 @@ inputs:
   prune-old-caches:
     description: >
       On cache miss, delete other Actions caches in this repo whose key starts
-      with cache-key-prefix (frees space; does not wait for GitHub eviction).
+      with cache-key-prefix + OS (frees space; does not wait for GitHub eviction).
       Requires permissions: actions: write. Default true.
     required: false
     default: "true"
@@ -102,10 +102,8 @@ runs:
 
         echo "has_submodules=true" >> "$GITHUB_OUTPUT"
 
-        # Cache key must depend only on submodule identity, not on the parent
-        # commit. Including HEAD made the key unique per parent SHA and caused
-        # near-zero hit rates on normal pushes, rebases, and force-pushes.
-        # Safe because we always run `git submodule update --force` after restore.
+        # Identity: gitlinks + .gitmodules only (not parent HEAD).
+        # OS is part of the key for UI clarity; Actions also scopes caches by OS.
         LINKS="$(git ls-tree -r HEAD | awk '$2 == "commit" { print $3 " " $4 }' | sort)"
         MOD="$(git show HEAD:.gitmodules 2>/dev/null || true)"
 
@@ -116,9 +114,16 @@ runs:
         fi
 
         PREFIX="${{ inputs.cache-key-prefix }}"
-        echo "cache_key=${PREFIX}-${HASH}" >> "$GITHUB_OUTPUT"
-        echo "cache_key=${PREFIX}-${HASH}"
-        echo "Submodule cache identity (gitlinks + .gitmodules):"
+        OS="${{ runner.os }}"
+        # e.g. git-submodules-Linux-ce4faed4b522470c286b7494
+        CACHE_KEY="${PREFIX}-${OS}-${HASH}"
+        # Prune only this OS so we do not delete Windows/mac caches from Linux jobs
+        PRUNE_PREFIX="${PREFIX}-${OS}-"
+
+        echo "cache_key=${CACHE_KEY}" >> "$GITHUB_OUTPUT"
+        echo "prune_prefix=${PRUNE_PREFIX}" >> "$GITHUB_OUTPUT"
+        echo "cache_key=${CACHE_KEY}"
+        echo "Submodule cache identity (gitlinks + .gitmodules), OS=${OS}:"
         printf '%s\n' "$LINKS"
 
         {
@@ -173,20 +178,16 @@ runs:
           echo "Submodule cache MISS – cloning/updating submodules"
         fi
 
-        # Returns 0 if output looks transient (worth retrying)
         is_transient_error() {
           local log="$1"
-          # Explicit permanent failures → do not retry
           if echo "$log" | grep -Eiq \
             'returned error: 404|HTTP[[:space:]]*404|Repository not found|not found\.|could not read Username|Authentication failed|Permission denied|returned error: 401|returned error: 403|ERROR: Repository not found|does not exist|invalid pathspec|No url found for submodule'; then
             return 1
           fi
-          # Known transient / network flakiness
           if echo "$log" | grep -Eiq \
             'returned error: 502|returned error: 503|returned error: 504|returned error: 429|HTTP[[:space:]]*502|HTTP[[:space:]]*503|HTTP[[:space:]]*504|HTTP[[:space:]]*429|timed out|timeout|Connection timed out|Connection reset|Connection refused|Could not resolve host|Temporary failure|SSL connection|Unable to access|Failed to connect|network is unreachable|empty reply from server|RPC failed|early EOF|expected flush after'; then
             return 0
           fi
-          # Unknown: retry once policy — treat as transient to avoid false permanent
           return 0
         }
 
@@ -247,7 +248,7 @@ runs:
         key: ${{ steps.meta.outputs.cache_key }}
 
     ###########################################################################
-    # 6. PRUNE OLD SUBMODULE CACHES
+    # 6. PRUNE OLD SUBMODULE CACHES (same OS only)
     ###########################################################################
     - name: Prune old submodule caches
       if: >-
@@ -258,7 +259,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
-        PREFIX: ${{ inputs.cache-key-prefix }}
+        PREFIX: ${{ steps.meta.outputs.prune_prefix }}
         KEEP_KEY: ${{ steps.meta.outputs.cache_key }}
       run: |
         set -euo pipefail
@@ -268,13 +269,13 @@ runs:
           exit 0
         fi
 
-        echo "Pruning caches with prefix '${PREFIX}-' except '${KEEP_KEY}'"
+        echo "Pruning caches with prefix '${PREFIX}' except '${KEEP_KEY}'"
 
         ENTRIES=()
         while IFS= read -r line; do
           [ -n "$line" ] && ENTRIES+=("$line")
         done < <(
-          gh cache list --key "${PREFIX}-" --limit 100 \
+          gh cache list --key "${PREFIX}" --limit 100 \
             --json id,key,sizeInBytes \
             --jq '.[] | "\(.id)\t\(.key)\t\(.sizeInBytes)"' \
             2>/dev/null || true
