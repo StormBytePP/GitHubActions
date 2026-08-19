@@ -13,7 +13,7 @@ inputs:
     description: "Install documentation tools (doxygen + graphviz). Linux & macOS only"
     default: "false"
   version:
-    description: "Optional major version for gcc/clang (default: 14 for gcc, 20 for clang)"
+    description: "Optional major version for gcc/clang (default: 14 for gcc, 20 for clang). Ignored for Apple Clang on macOS."
     default: ""
   ccache-key:
     description: "Non-empty also installs ccache (Linux/macOS) or sccache (Windows). Empty = skip"
@@ -113,9 +113,11 @@ runs:
         fi
 
     ###########################################################################
-    # 2. macOS (via install-cached)
+    # 2. macOS
+    #    clang / clang-libc++ → Apple Clang (Xcode); do NOT install Homebrew llvm
+    #    gcc                 → Homebrew gcc@N
     ###########################################################################
-    - name: Install macOS packages + toolchain
+    - name: Install macOS packages
       if: runner.os == 'macOS'
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
@@ -123,11 +125,10 @@ runs:
           ninja
           cmake
           ${{ inputs.toolchain == 'gcc' && format('gcc@{0}', env.GCC_VERSION) || '' }}
-          ${{ (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++') && format('llvm@{0}', env.CLANG_VERSION) || '' }}
           ${{ inputs.ccache-key != '' && 'ccache' || '' }}
           ${{ inputs.docs == 'true' && 'doxygen graphviz' || '' }}
 
-    - name: Add Homebrew toolchain to PATH (macOS)
+    - name: Configure macOS compiler PATH
       if: runner.os == 'macOS'
       shell: bash
       run: |
@@ -136,22 +137,17 @@ runs:
         if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
           PREFIX="$(brew --prefix "gcc@${{ env.GCC_VERSION }}")"
           echo "${PREFIX}/bin" >> "$GITHUB_PATH"
-          echo "PATH += ${PREFIX}/bin"
+          echo "PATH += ${PREFIX}/bin (Homebrew gcc)"
+          command -v gcc >/dev/null
+          echo "gcc: $(command -v gcc)"
         else
-          # Versioned llvm is keg-only
-          if PREFIX="$(brew --prefix "llvm@${{ env.CLANG_VERSION }}" 2>/dev/null)"; then
-            :
-          elif PREFIX="$(brew --prefix llvm 2>/dev/null)"; then
-            :
-          else
-            echo "::error::Could not resolve Homebrew llvm prefix"
-            exit 1
-          fi
-          echo "${PREFIX}/bin" >> "$GITHUB_PATH"
-          echo "PATH += ${PREFIX}/bin"
+          # Apple Clang from Xcode / CLT — correct macOS SDK (time.h, etc.)
+          echo "Using Apple Clang (Xcode); skipping Homebrew llvm"
           command -v clang >/dev/null
-          echo "clang: $(command -v clang)"
-          # Homebrew llvm bottles often omit lld; macOS uses the system linker (ld64).
+          command -v clang++ >/dev/null
+          echo "clang:  $(command -v clang)"
+          echo "clang++: $(command -v clang++)"
+          clang --version | head -n 2 || true
         fi
 
     ###########################################################################
