@@ -241,7 +241,7 @@ runs:
         fi
 
     ###########################################################################
-    # 1b. FORCE LLD FOR CLANG (Linux only — macOS uses system ld64)
+    # 1b. FORCE LLD FOR CLANG (Linux only)
     ###########################################################################
     - name: Force lld for Clang
       if: runner.os == 'Linux' && (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++')
@@ -268,28 +268,37 @@ runs:
     # 1c. RESTORE COMPILER CACHE
     ###########################################################################
     - name: Restore ccache
+      id: restore-ccache
       if: inputs.ccache-key != '' && (runner.os == 'Linux' || runner.os == 'macOS')
       uses: actions/cache/restore@v4
       with:
         path: ${{ env.CCACHE_DIR }}
-        key: ${{ steps.cachekeys.outputs.cache_key }}
+        key: ${{ steps.cachekeys.outputs.cache_key }}-${{ github.run_id }}
+        restore-keys: |
+          ${{ steps.cachekeys.outputs.cache_key }}-
 
     - name: Restore sccache
+      id: restore-sccache
       if: inputs.ccache-key != '' && runner.os == 'Windows'
       uses: actions/cache/restore@v4
       with:
         path: ${{ env.SCCACHE_DIR }}
-        key: ${{ steps.cachekeys.outputs.cache_key }}
+        key: ${{ steps.cachekeys.outputs.cache_key }}-${{ github.run_id }}
+        restore-keys: |
+          ${{ steps.cachekeys.outputs.cache_key }}-
 
     ###########################################################################
     # 1d. RESTORE + PREPARE DOWNLOADS CACHE
     ###########################################################################
     - name: Restore downloads cache
+      id: restore-downloads
       if: inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
       uses: actions/cache/restore@v4
       with:
         path: ${{ steps.buildmaster.outputs.downloads_dir }}
-        key: ${{ steps.cachekeys.outputs.downloads_cache_key }}
+        key: ${{ steps.cachekeys.outputs.downloads_cache_key }}-${{ github.run_id }}
+        restore-keys: |
+          ${{ steps.cachekeys.outputs.downloads_cache_key }}-
 
     - name: Ensure downloads directory exists
       if: inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
@@ -396,7 +405,6 @@ runs:
           ccache -s || true
         fi
 
-        # lld only on Linux (Homebrew llvm often has no lld; macOS uses system ld64)
         LINKER_ARGS=()
         if [ "${{ runner.os }}" = "Linux" ]; then
           case "${{ inputs.toolchain }}" in
@@ -606,7 +614,7 @@ runs:
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CCACHE_DIR }}
-        key: ${{ steps.cachekeys.outputs.cache_key }}
+        key: ${{ steps.cachekeys.outputs.cache_key }}-${{ github.run_id }}
 
     - name: Save sccache
       if: always() && runner.os == 'Windows' && inputs.ccache-key != ''
@@ -614,7 +622,7 @@ runs:
       uses: actions/cache/save@v4
       with:
         path: ${{ env.SCCACHE_DIR }}
-        key: ${{ steps.cachekeys.outputs.cache_key }}
+        key: ${{ steps.cachekeys.outputs.cache_key }}-${{ github.run_id }}
 
     ###########################################################################
     # 7. SAVE DOWNLOADS CACHE
@@ -625,4 +633,91 @@ runs:
       uses: actions/cache/save@v4
       with:
         path: ${{ steps.buildmaster.outputs.downloads_dir }}
-        key: ${{ steps.cachekeys.outputs.downloads_cache_key }}
+        key: ${{ steps.cachekeys.outputs.downloads_cache_key }}-${{ github.run_id }}
+
+    ###########################################################################
+    # 8. CLEANUP OLD CACHES (keep only the newest one)
+    ###########################################################################
+    - name: Cleanup old ccache entries
+      if: always() && (runner.os == 'Linux' || runner.os == 'macOS') && inputs.ccache-key != '' && steps.restore-ccache.outputs.cache-hit == 'true'
+      continue-on-error: true
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const keyPrefix = `${{ steps.cachekeys.outputs.cache_key }}-`;
+          const currentKey = `${keyPrefix}${context.runId}`;
+          const caches = await github.paginate(
+            github.rest.actions.getActionsCacheList,
+            {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              key: keyPrefix,
+              per_page: 100
+            }
+          );
+          for (const cache of caches) {
+            if (cache.key !== currentKey) {
+              console.log(`Deleting old cache: ${cache.key} (id=${cache.id})`);
+              await github.rest.actions.deleteActionsCacheById({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                cache_id: cache.id
+              });
+            }
+          }
+
+    - name: Cleanup old sccache entries
+      if: always() && runner.os == 'Windows' && inputs.ccache-key != '' && steps.restore-sccache.outputs.cache-hit == 'true'
+      continue-on-error: true
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const keyPrefix = `${{ steps.cachekeys.outputs.cache_key }}-`;
+          const currentKey = `${keyPrefix}${context.runId}`;
+          const caches = await github.paginate(
+            github.rest.actions.getActionsCacheList,
+            {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              key: keyPrefix,
+              per_page: 100
+            }
+          );
+          for (const cache of caches) {
+            if (cache.key !== currentKey) {
+              console.log(`Deleting old cache: ${cache.key} (id=${cache.id})`);
+              await github.rest.actions.deleteActionsCacheById({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                cache_id: cache.id
+              });
+            }
+          }
+
+    - name: Cleanup old downloads cache entries
+      if: always() && inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true' && steps.restore-downloads.outputs.cache-hit == 'true'
+      continue-on-error: true
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const keyPrefix = `${{ steps.cachekeys.outputs.downloads_cache_key }}-`;
+          const currentKey = `${keyPrefix}${context.runId}`;
+          const caches = await github.paginate(
+            github.rest.actions.getActionsCacheList,
+            {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              key: keyPrefix,
+              per_page: 100
+            }
+          );
+          for (const cache of caches) {
+            if (cache.key !== currentKey) {
+              console.log(`Deleting old downloads cache: ${cache.key} (id=${cache.id})`);
+              await github.rest.actions.deleteActionsCacheById({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                cache_id: cache.id
+              });
+            }
+          }
