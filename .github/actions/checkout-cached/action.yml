@@ -173,9 +173,9 @@ runs:
         git submodule sync $RECURSIVE_FLAG
 
         if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
-          echo "Submodule cache HIT – forcing consistent working trees"
+          echo "📦 Submodule cache HIT – forcing consistent working trees"
         else
-          echo "Submodule cache MISS – cloning/updating submodules"
+          echo "📥 Submodule cache MISS – cloning/updating submodules (this can take a while)"
         fi
 
         is_transient_error() {
@@ -199,31 +199,43 @@ runs:
         if [ "$max" -lt 1 ]; then max=1; fi
 
         while true; do
+          echo ""
+          echo "────────────────────────────────────────────────────────"
+          echo "🔄 Submodule update – attempt ${attempt}/${max}"
+          echo "────────────────────────────────────────────────────────"
+
           set +e
+          # --progress da feedback continuo de objetos/clones
+          # No capturamos la salida completa → se ve en tiempo real
           # shellcheck disable=SC2086
-          out="$(git submodule update --init $RECURSIVE_FLAG --force --jobs 1 2>&1)"
-          rc=$?
+          git submodule update --init $RECURSIVE_FLAG --force --jobs 1 --progress 2>&1 | tee /tmp/submodule-update.log
+          rc=${PIPESTATUS[0]}
           set -e
 
-          printf '%s\n' "$out"
+          out="$(cat /tmp/submodule-update.log 2>/dev/null || true)"
 
           if [ "$rc" -eq 0 ]; then
-            echo "Submodule update succeeded (attempt ${attempt}/${max})"
+            echo ""
+            echo "✅ Submodule update succeeded (attempt ${attempt}/${max})"
             break
           fi
 
           if ! is_transient_error "$out"; then
-            echo "Permanent submodule error detected – not retrying"
+            echo ""
+            echo "❌ Permanent submodule error detected – not retrying"
             exit "$rc"
           fi
 
           if [ "$attempt" -ge "$max" ]; then
-            echo "Submodule update failed after ${max} transient attempt(s) (exit ${rc})"
+            echo ""
+            echo "❌ Submodule update failed after ${max} transient attempt(s) (exit ${rc})"
             exit "$rc"
           fi
 
           sleep_secs=$((base * attempt))
-          echo "Transient failure (attempt ${attempt}/${max}, exit ${rc}); retrying in ${sleep_secs}s..."
+          echo ""
+          echo "⚠️  Transient failure (attempt ${attempt}/${max}, exit ${rc})"
+          echo "   Retrying in ${sleep_secs}s..."
           sleep "$sleep_secs"
           attempt=$((attempt + 1))
 
@@ -231,6 +243,8 @@ runs:
           git submodule sync $RECURSIVE_FLAG || true
         done
 
+        echo ""
+        echo "📊 Final submodule status:"
         # shellcheck disable=SC2086
         git submodule status $RECURSIVE_FLAG || true
 

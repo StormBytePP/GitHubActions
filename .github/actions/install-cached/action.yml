@@ -56,13 +56,17 @@ runs:
       run: |
         $ErrorActionPreference = "Stop"
 
+        Write-Host "────────────────────────────────────────────────────────"
+        Write-Host "🍫  Installing packages with Chocolatey (Windows)"
+        Write-Host "────────────────────────────────────────────────────────"
+
         $pkgs = "${{ inputs.packages }}".Trim()
         if ([string]::IsNullOrWhiteSpace($pkgs)) {
-          Write-Host "No packages requested; skipping"
+          Write-Host "ℹ️  No packages requested; skipping"
           exit 0
         }
 
-        Write-Host "Installing packages with Chocolatey: $pkgs"
+        Write-Host "📦 Packages: $pkgs"
         choco install ($pkgs -split '\s+' | Where-Object { $_ -ne "" }) -y --no-progress
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -80,7 +84,7 @@ runs:
             )) {
               if (Test-Path (Join-Path $d "nasm.exe")) {
                 $pathAdds.Add($d)
-                Write-Host "PATH: NASM -> $d"
+                Write-Host "PATH: NASM → $d"
               }
             }
           }
@@ -93,7 +97,7 @@ runs:
             )) {
               if ((Test-Path (Join-Path $d "yasm.exe")) -or (Test-Path $d)) {
                 $pathAdds.Add($d)
-                Write-Host "PATH: yasm candidate -> $d"
+                Write-Host "PATH: yasm candidate → $d"
               }
             }
           }
@@ -109,20 +113,22 @@ runs:
         if ($pkgs -match '(?i)\bnasm\b') {
           $nasm = Get-Command nasm.exe -ErrorAction SilentlyContinue
           if ($null -eq $nasm) {
-            Write-Warning "nasm.exe not found on PATH after install"
+            Write-Warning "⚠️  nasm.exe not found on PATH after install"
           } else {
-            Write-Host "nasm OK: $($nasm.Source)"
+            Write-Host "✅ nasm OK: $($nasm.Source)"
           }
         }
 
         if ($pkgs -match '(?i)\byasm\b') {
           $yasm = Get-Command yasm.exe -ErrorAction SilentlyContinue
           if ($null -eq $yasm) {
-            Write-Warning "yasm.exe not found on PATH after install"
+            Write-Warning "⚠️  yasm.exe not found on PATH after install"
           } else {
-            Write-Host "yasm OK: $($yasm.Source)"
+            Write-Host "✅ yasm OK: $($yasm.Source)"
           }
         }
+
+        Write-Host "✅ Chocolatey install finished"
 
     ###########################################################################
     # macOS → Homebrew
@@ -133,30 +139,37 @@ runs:
       run: |
         set -euo pipefail
 
+        echo "────────────────────────────────────────────────────────"
+        echo "🍺  Installing packages with Homebrew (macOS)"
+        echo "────────────────────────────────────────────────────────"
+
         PKGS="$(echo "${{ inputs.packages }}" | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')"
         if [ -z "$PKGS" ]; then
-          echo "No packages requested; skipping"
+          echo "ℹ️  No packages requested; skipping"
           exit 0
         fi
 
-        echo "Installing packages with Homebrew: $PKGS"
+        echo "📦 Packages: $PKGS"
 
         for pkg in $PKGS; do
           if brew install "$pkg"; then
-            echo "Installed: $pkg"
+            echo "✅ Installed: $pkg"
           else
             case "$pkg" in
               llvm@*)
-                echo "Formula $pkg failed; falling back to llvm"
+                echo "⚠️  Formula $pkg failed; falling back to llvm"
                 brew install llvm
+                echo "✅ Installed: llvm (fallback)"
                 ;;
               *)
-                echo "::error::Failed to install $pkg"
+                echo "::error::❌ Failed to install $pkg"
                 exit 1
                 ;;
             esac
           fi
         done
+
+        echo "✅ Homebrew install finished"
 
     ###########################################################################
     # LINUX → APT (lists from update-apt-cached + optional .deb cache)
@@ -168,12 +181,17 @@ runs:
       run: |
         set -euo pipefail
 
+        echo "────────────────────────────────────────────────────────"
+        echo "📋  Normalizing package list (Linux)"
+        echo "────────────────────────────────────────────────────────"
+
         PACKAGES_NORMALIZED="$(echo "${{ inputs.packages }}" | tr -s '[:space:]' '\n' | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/ *$//')"
         echo "packages=${PACKAGES_NORMALIZED}" >> "$GITHUB_OUTPUT"
-        echo "Normalized packages: ${PACKAGES_NORMALIZED}"
+        echo "📦 Normalized packages: ${PACKAGES_NORMALIZED}"
 
         if [ -z "$PACKAGES_NORMALIZED" ]; then
           echo "empty=true" >> "$GITHUB_OUTPUT"
+          echo "ℹ️  Empty package list"
         else
           echo "empty=false" >> "$GITHUB_OUTPUT"
         fi
@@ -185,11 +203,13 @@ runs:
       run: |
         set -euo pipefail
 
+        echo "🔑 Resolving APT lists cache key..."
+
         BASE="$(echo "${{ inputs.lists-cache-key }}" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
 
         if [ -z "$BASE" ]; then
           echo "enabled=false" >> "$GITHUB_OUTPUT"
-          echo "lists-cache-key empty – will apt-get update locally if needed"
+          echo "ℹ️  lists-cache-key empty – will apt-get update locally if needed"
           exit 0
         fi
 
@@ -208,7 +228,8 @@ runs:
         echo "lists_dir=${LISTS_DIR}" >> "$GITHUB_OUTPUT"
         echo "LISTS_KEY=${KEY}" >> "$GITHUB_ENV"
         echo "LISTS_DIR=${LISTS_DIR}" >> "$GITHUB_ENV"
-        echo "APT lists key: ${KEY}"
+        echo "✅ APT lists key: ${KEY}"
+        echo "📁 Lists dir: ${LISTS_DIR}"
 
     - name: Restore APT lists cache
       if: runner.os == 'Linux' && steps.lists.outputs.enabled == 'true'
@@ -224,8 +245,12 @@ runs:
       run: |
         set -euo pipefail
 
+        echo "────────────────────────────────────────────────────────"
+        echo "📥  Seeding / updating APT lists"
+        echo "────────────────────────────────────────────────────────"
+
         if [ "${APT_LISTS_FRESH:-0}" = "1" ]; then
-          echo "APT lists already fresh in this job; skipping update"
+          echo "ℹ️  APT lists already fresh in this job; skipping update"
           exit 0
         fi
 
@@ -236,18 +261,19 @@ runs:
         if [ "${{ steps.lists.outputs.enabled }}" = "true" ]; then
           LISTS_DIR="${{ steps.lists.outputs.lists_dir }}"
           if compgen -G "${LISTS_DIR}/*" > /dev/null; then
-            echo "Seeding /var/lib/apt/lists from ${LISTS_DIR}..."
+            echo "📁 Seeding /var/lib/apt/lists from ${LISTS_DIR}..."
             sudo find "${LISTS_DIR}" -maxdepth 1 -type f -exec cp --update=none {} /var/lib/apt/lists/ \;
             if sudo find /var/lib/apt/lists -maxdepth 1 -type f -name '*_Packages' | grep -q .; then
               NEED_UPDATE=0
-              echo "Restored lists usable; skipping apt-get update"
+              echo "✅ Restored lists usable; skipping apt-get update"
             fi
           fi
         fi
 
         if [ "$NEED_UPDATE" = "1" ]; then
-          echo "Running apt-get update..."
+          echo "🔄 Running apt-get update..."
           sudo apt-get update -qq
+          echo "✅ apt-get update finished"
         fi
 
         echo "APT_LISTS_FRESH=1" >> "$GITHUB_ENV"
@@ -258,6 +284,8 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+
+        echo "🔑 Preparing APT .deb cache paths..."
 
         PACKAGES_NORMALIZED="${{ steps.pkgs.outputs.packages }}"
         PREFIX="$(echo "${{ inputs.cache-key }}" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
@@ -276,7 +304,8 @@ runs:
         echo "DEBS_KEY=${DEBS_KEY}" >> "$GITHUB_ENV"
         echo "DEBS_DIR=${DEBS_DIR}" >> "$GITHUB_ENV"
         echo "debs_key=${DEBS_KEY}" >> "$GITHUB_OUTPUT"
-        echo "APT debs key: ${DEBS_KEY}"
+        echo "✅ APT debs key: ${DEBS_KEY}"
+        echo "📁 Debs dir: ${DEBS_DIR}"
 
     - name: Restore APT debs cache
       if: runner.os == 'Linux' && inputs.cache-key != '' && steps.pkgs.outputs.empty != 'true'
@@ -292,14 +321,19 @@ runs:
       run: |
         set -euo pipefail
 
-        echo "Seeding /var/cache/apt/archives from ${DEBS_DIR}..."
+        echo "────────────────────────────────────────────────────────"
+        echo "📦  Seeding system APT archives from deb cache"
+        echo "────────────────────────────────────────────────────────"
+
+        echo "📁 Seeding /var/cache/apt/archives from ${DEBS_DIR}..."
         sudo mkdir -p /var/cache/apt/archives/partial
 
         if compgen -G "${DEBS_DIR}/*.deb" > /dev/null; then
           sudo cp --update=none "${DEBS_DIR}"/*.deb /var/cache/apt/archives/ || true
-          echo "Restored $(ls -1 "${DEBS_DIR}"/*.deb 2>/dev/null | wc -l) deb(s)"
+          COUNT=$(ls -1 "${DEBS_DIR}"/*.deb 2>/dev/null | wc -l)
+          echo "✅ Restored ${COUNT} deb(s)"
         else
-          echo "No .deb files in deb cache"
+          echo "ℹ️  No .deb files in deb cache"
         fi
 
     - name: Download APT packages
@@ -308,8 +342,12 @@ runs:
       run: |
         set -euo pipefail
 
+        echo "────────────────────────────────────────────────────────"
+        echo "⬇️  Downloading APT packages"
+        echo "────────────────────────────────────────────────────────"
+
         PACKAGES="${{ steps.pkgs.outputs.packages }}"
-        echo "Downloading packages: ${PACKAGES}"
+        echo "📦 Downloading: ${PACKAGES}"
         # shellcheck disable=SC2086
         sudo DEBIAN_FRONTEND=noninteractive apt-get install --download-only -y ${PACKAGES}
 
@@ -320,7 +358,10 @@ runs:
             cp --update=none "$deb" "${DEBS_DIR}/" 2>/dev/null || true
           done
           shopt -u nullglob
+          echo "📁 Copied debs into cache dir"
         fi
+
+        echo "✅ Download finished"
 
     - name: Install APT packages
       if: runner.os == 'Linux' && steps.pkgs.outputs.empty != 'true'
@@ -328,10 +369,16 @@ runs:
       run: |
         set -euo pipefail
 
+        echo "────────────────────────────────────────────────────────"
+        echo "🔧  Installing APT packages"
+        echo "────────────────────────────────────────────────────────"
+
         PACKAGES="${{ steps.pkgs.outputs.packages }}"
-        echo "Installing: ${PACKAGES}"
+        echo "📦 Installing: ${PACKAGES}"
         # shellcheck disable=SC2086
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ${PACKAGES}
+
+        echo "✅ APT install finished"
 
     - name: Save APT debs cache
       if: >-

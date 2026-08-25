@@ -89,11 +89,13 @@ runs:
       run: |
         set -euo pipefail
 
+        echo "🔑 Computing compiler cache keys..."
+
         OS="${{ runner.os }}"
         TOOL="${{ inputs.toolchain }}"
         SUFFIX="$(echo '${{ inputs.ccache-key }}' | tr -s ' ' | sed 's/^ *//;s/ *$//')"
         if [ -z "$SUFFIX" ]; then
-          echo "ccache-key is empty after trim"
+          echo "❌ ccache-key is empty after trim"
           exit 1
         fi
 
@@ -109,24 +111,24 @@ runs:
           mkdir -p "$SCCACHE_DIR"
           echo "SCCACHE_DIR=${SCCACHE_DIR}" >> "$GITHUB_ENV"
           export SCCACHE_DIR
-          echo "SCCACHE_DIR=${SCCACHE_DIR}"
+          echo "📁 SCCACHE_DIR=${SCCACHE_DIR}"
         else
           PREFIX="ccache"
           CCACHE_DIR="${RUNNER_TEMP}/ccache"
           mkdir -p "$CCACHE_DIR"
           echo "CCACHE_DIR=${CCACHE_DIR}" >> "$GITHUB_ENV"
           export CCACHE_DIR
-          echo "CCACHE_DIR=${CCACHE_DIR}"
+          echo "📁 CCACHE_DIR=${CCACHE_DIR}"
         fi
 
         KEY="${PREFIX}-${OS}-${TOOL}-${SUFFIX}"
         echo "cache_key=${KEY}" >> "$GITHUB_OUTPUT"
         echo "CACHE_KEY=${KEY}" >> "$GITHUB_ENV"
-        echo "Compiler cache KEY=${KEY}"
+        echo "✅ Compiler cache KEY=${KEY}"
 
         DL_KEY="buildmaster-downloads-${OS}-${TOOL}-${SUFFIX}"
         echo "downloads_cache_key=${DL_KEY}" >> "$GITHUB_OUTPUT"
-        echo "Downloads cache KEY=${DL_KEY}"
+        echo "✅ Downloads cache KEY=${DL_KEY}"
 
     ###########################################################################
     # 0b. DETECT STORMBYTE-BUILDMASTER
@@ -136,6 +138,8 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+
+        echo "🔍 Looking for StormByte-BuildMaster submodule..."
 
         DETECTED="false"
         DOWNLOADS_DIR=""
@@ -159,11 +163,11 @@ runs:
         fi
 
         if [ "$DETECTED" = "true" ]; then
-          echo "StormByte-BuildMaster detected, creating download cache for ${DOWNLOADS_REL}"
+          echo "✅ StormByte-BuildMaster detected → downloads cache for ${DOWNLOADS_REL}"
           echo "detected=true" >> "$GITHUB_OUTPUT"
           echo "downloads_dir=${DOWNLOADS_DIR}" >> "$GITHUB_OUTPUT"
         else
-          echo "StormByte-BuildMaster not detected, skipping download cache creation."
+          echo "ℹ️  StormByte-BuildMaster not detected – skipping downloads cache"
           echo "detected=false" >> "$GITHUB_OUTPUT"
           echo "downloads_dir=" >> "$GITHUB_OUTPUT"
         fi
@@ -190,6 +194,8 @@ runs:
       run: |
         set -euo pipefail
 
+        echo "⚙️  Configuring compiler cache & launchers..."
+
         OS="${{ runner.os }}"
 
         if [ "$OS" = "Windows" ]; then
@@ -210,10 +216,10 @@ runs:
             sccache --stop-server 2>/dev/null || true
             sccache --start-server 2>/dev/null || true
             sccache --zero-stats 2>/dev/null || true
-            echo "sccache ready (dir=${SCCACHE_DIR})"
+            echo "✅ sccache ready (dir=${SCCACHE_DIR})"
             sccache --show-stats || true
           else
-            echo "WARNING: sccache not on PATH after install-toolchain"
+            echo "⚠️  WARNING: sccache not on PATH after install-toolchain"
           fi
         else
           CCACHE_DIR="${RUNNER_TEMP}/ccache"
@@ -233,10 +239,10 @@ runs:
           if command -v ccache >/dev/null 2>&1; then
             ccache -M 2G || true
             ccache -z || true
-            echo "ccache ready (dir=${CCACHE_DIR})"
+            echo "✅ ccache ready (dir=${CCACHE_DIR})"
             ccache -s || true
           else
-            echo "WARNING: ccache not on PATH after install-toolchain"
+            echo "⚠️  WARNING: ccache not on PATH after install-toolchain"
           fi
         fi
 
@@ -248,6 +254,8 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+
+        echo "🔗 Forcing lld linker for ${{ inputs.toolchain }}..."
 
         if ! command -v ld.lld >/dev/null 2>&1 && ! command -v lld >/dev/null 2>&1; then
           echo "::error::lld not found on PATH (install-toolchain should provide it)"
@@ -262,7 +270,7 @@ runs:
         echo "CMAKE_MODULE_LINKER_FLAGS_INIT=-fuse-ld=lld" >> "$GITHUB_ENV"
         echo "LDFLAGS=-fuse-ld=lld" >> "$GITHUB_ENV"
 
-        echo "Forced -fuse-ld=lld for ${{ inputs.toolchain }}"
+        echo "✅ Forced -fuse-ld=lld for ${{ inputs.toolchain }}"
 
     ###########################################################################
     # 1c. RESTORE COMPILER CACHE
@@ -305,7 +313,7 @@ runs:
       shell: bash
       run: |
         mkdir -p "${{ steps.buildmaster.outputs.downloads_dir }}"
-        echo "Downloads directory ready: ${{ steps.buildmaster.outputs.downloads_dir }}"
+        echo "📁 Downloads directory ready: ${{ steps.buildmaster.outputs.downloads_dir }}"
 
     ###########################################################################
     # 1e. WINDOWS: sanitize PATH for MSVC linker
@@ -315,6 +323,8 @@ runs:
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
+
+        Write-Host "🧹 Sanitizing PATH for MSVC linker..."
 
         function Remove-GnuShadowPaths([string]$pathValue) {
           $gnuPathFragments = @(
@@ -373,14 +383,17 @@ runs:
           exit 1
         }
 
-        $bannerText = @(cmd /c "link.exe 2>&1") | Out-String
+        # Capture the banner. link.exe returns exit code 1 when showing help,
+        # so we explicitly reset $LASTEXITCODE afterwards.
+        $bannerText = cmd /c "link.exe 2>&1" | Out-String
+        $LASTEXITCODE = 0
+
         Write-Host "link.exe banner (first 300 chars):"
         if ($bannerText.Length -gt 0) {
           Write-Host $bannerText.Substring(0, [Math]::Min(300, $bannerText.Length))
         }
 
-        Write-Host "MSVC linker OK"
-        exit 0
+        Write-Host "✅ MSVC linker OK"
 
     ###########################################################################
     # 2. CONFIGURE
@@ -393,6 +406,13 @@ runs:
       run: |
         set -euo pipefail
 
+        echo "────────────────────────────────────────────────────────"
+        echo "🔧 Configuring CMake (Linux/macOS)"
+        echo "   Build type : ${{ inputs.build-type }}"
+        echo "   Build dir  : ${{ inputs.build-dir }}"
+        echo "   Toolchain  : ${{ inputs.toolchain }}"
+        echo "────────────────────────────────────────────────────────"
+
         LAUNCHER_ARGS=()
         if [ -n "${{ inputs.ccache-key }}" ] && command -v ccache >/dev/null 2>&1; then
           export CCACHE_DIR="${CCACHE_DIR:-${RUNNER_TEMP}/ccache}"
@@ -401,7 +421,7 @@ runs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           )
-          echo "Using ccache launcher (dir=${CCACHE_DIR})"
+          echo "📦 Using ccache launcher (dir=${CCACHE_DIR})"
           ccache -s || true
         fi
 
@@ -414,7 +434,7 @@ runs:
                 -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld
                 -DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld
               )
-              echo "Using lld for toolchain=${{ inputs.toolchain }}"
+              echo "🔗 Using lld for toolchain=${{ inputs.toolchain }}"
               ;;
           esac
         fi
@@ -429,6 +449,8 @@ runs:
           ${LINKER_ARGS[@]+"${LINKER_ARGS[@]}"} \
           ${CONFIGURE_OPTIONS}
 
+        echo "✅ CMake configure finished"
+
     - name: Configure CMake (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
@@ -436,6 +458,13 @@ runs:
         CONFIGURE_OPTIONS: ${{ inputs.configure-options }}
       run: |
         $ErrorActionPreference = "Stop"
+
+        Write-Host "────────────────────────────────────────────────────────"
+        Write-Host "🔧 Configuring CMake (Windows)"
+        Write-Host "   Build type : ${{ inputs.build-type }}"
+        Write-Host "   Build dir  : ${{ inputs.build-dir }}"
+        Write-Host "   Toolchain  : ${{ inputs.toolchain }}"
+        Write-Host "────────────────────────────────────────────────────────"
 
         $cmakeArgs = [System.Collections.Generic.List[string]]::new()
         foreach ($a in @(
@@ -450,13 +479,13 @@ runs:
         }
 
         if ("${{ inputs.msvc-embedded-debug }}" -eq "true") {
-          Write-Host "msvc-embedded-debug: CMP0141=NEW + Embedded (/Z7)"
+          Write-Host "🛠️  msvc-embedded-debug: CMP0141=NEW + Embedded (/Z7)"
           $cmakeArgs.Add("-DCMAKE_POLICY_DEFAULT_CMP0141=NEW")
           $cmakeArgs.Add("-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded")
         }
 
         if ("${{ inputs.ccache-key }}" -ne "" -and (Get-Command sccache -ErrorAction SilentlyContinue)) {
-          Write-Host "Using sccache launcher"
+          Write-Host "📦 Using sccache launcher"
           $cmakeArgs.Add("-DCMAKE_C_COMPILER_LAUNCHER=sccache")
           $cmakeArgs.Add("-DCMAKE_CXX_COMPILER_LAUNCHER=sccache")
 
@@ -471,7 +500,7 @@ runs:
           "SCCACHE_DIR=$($env:SCCACHE_DIR)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "SCCACHE_DIR=$($env:SCCACHE_DIR)"
         } else {
-          Write-Host "sccache launcher disabled"
+          Write-Host "ℹ️  sccache launcher disabled"
         }
 
         $extra = $env:CONFIGURE_OPTIONS
@@ -492,6 +521,8 @@ runs:
         & cmake @($cmakeArgs.ToArray())
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+        Write-Host "✅ CMake configure finished"
+
     ###########################################################################
     # 3. BUILD
     ###########################################################################
@@ -500,6 +531,10 @@ runs:
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
+
+        Write-Host "────────────────────────────────────────────────────────"
+        Write-Host "🏗️  Building with Ninja (Windows)"
+        Write-Host "────────────────────────────────────────────────────────"
 
         function Remove-GnuShadowPaths([string]$pathValue) {
           $gnuPathFragments = @(
@@ -536,12 +571,17 @@ runs:
         if ($jobs -lt 1) { $jobs = 4 }
 
         $target = "${{ inputs.target }}"
+        Write-Host "🚀 Starting build with $jobs jobs..."
         if ($target -ne "") {
+          Write-Host "   Target: $target"
           ninja -C "${{ inputs.build-dir }}" -j $jobs $target
         } else {
+          Write-Host "   Target: all"
           ninja -C "${{ inputs.build-dir }}" -j $jobs
         }
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        Write-Host "✅ Build finished successfully"
 
     - name: Build (Linux/macOS)
       if: runner.os != 'Windows'
@@ -549,13 +589,23 @@ runs:
       run: |
         set -euo pipefail
 
+        echo "────────────────────────────────────────────────────────"
+        echo "🏗️  Building with Ninja (Linux/macOS)"
+        echo "────────────────────────────────────────────────────────"
+
         JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
+        echo "🚀 Starting build with ${JOBS} jobs..."
+
         if [ -n "${{ inputs.target }}" ]; then
+          echo "   Target: ${{ inputs.target }}"
           ninja -C "${{ inputs.build-dir }}" -j"${JOBS}" "${{ inputs.target }}"
         else
+          echo "   Target: all"
           ninja -C "${{ inputs.build-dir }}" -j"${JOBS}"
         fi
+
+        echo "✅ Build finished successfully"
 
     ###########################################################################
     # 4. CACHE STATS
@@ -565,8 +615,9 @@ runs:
       shell: bash
       run: |
         set +e
+        echo ""
         echo "=============================================="
-        echo " COMPILER CACHE STATISTICS"
+        echo " 📊 COMPILER CACHE STATISTICS"
         echo "=============================================="
         if [[ "${{ runner.os }}" == "Windows" ]]; then
           echo "SCCACHE_DIR=${SCCACHE_DIR:-<unset>}"
@@ -576,6 +627,7 @@ runs:
           command -v ccache >/dev/null 2>&1 && ccache -s || echo "ccache not found in PATH"
         fi
         echo "=============================================="
+        echo ""
 
     ###########################################################################
     # 5. TESTS (optional)
@@ -587,6 +639,11 @@ runs:
         CTEST_OPTIONS: ${{ inputs.ctest-options }}
       run: |
         $ErrorActionPreference = "Stop"
+
+        Write-Host "────────────────────────────────────────────────────────"
+        Write-Host "🧪 Running tests (Windows)"
+        Write-Host "────────────────────────────────────────────────────────"
+
         $opts = $env:CTEST_OPTIONS
         if ($opts) {
           ctest --test-dir "${{ inputs.build-dir }}" $opts.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
@@ -595,6 +652,8 @@ runs:
         }
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+        Write-Host "✅ Tests finished"
+
     - name: Run tests (Linux/macOS)
       if: inputs.run-tests == 'true' && runner.os != 'Windows'
       shell: bash
@@ -602,8 +661,15 @@ runs:
         CTEST_OPTIONS: ${{ inputs.ctest-options }}
       run: |
         set -euo pipefail
+
+        echo "────────────────────────────────────────────────────────"
+        echo "🧪 Running tests (Linux/macOS)"
+        echo "────────────────────────────────────────────────────────"
+
         # shellcheck disable=SC2086
         ctest --test-dir "${{ inputs.build-dir }}" ${CTEST_OPTIONS}
+
+        echo "✅ Tests finished"
 
     ###########################################################################
     # 6. SAVE COMPILER CACHE

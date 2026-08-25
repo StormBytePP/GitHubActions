@@ -25,11 +25,18 @@ runs:
   using: "composite"
   steps:
 
+    ###########################################################################
+    # 0. SKIP ON NON-LINUX
+    ###########################################################################
     - name: Skip on non-Linux
       if: runner.os != 'Linux'
       shell: bash
-      run: echo "update-apt-cached is a no-op on ${{ runner.os }}"
+      run: |
+        echo "ℹ️  update-apt-cached is a no-op on ${{ runner.os }}"
 
+    ###########################################################################
+    # 1. RESOLVE CACHE KEY + DIRECTORY
+    ###########################################################################
     - name: Resolve cache key and directory
       if: runner.os == 'Linux'
       id: meta
@@ -37,19 +44,25 @@ runs:
       run: |
         set -euo pipefail
 
+        echo "────────────────────────────────────────────────────────"
+        echo "🔑 Resolving APT lists cache key & directory"
+        echo "────────────────────────────────────────────────────────"
+
         BASE="$(echo "${{ inputs.cache-key }}" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
 
         if [ -z "$BASE" ]; then
           echo "enabled=false" >> "$GITHUB_OUTPUT"
-          echo "cache-key is empty – bypass (no lists cache; other jobs update on their own)"
+          echo "ℹ️  cache-key is empty – bypass (no lists cache; other jobs update on their own)"
           exit 0
         fi
 
         if [ "${{ inputs.rotate-weekly }}" = "true" ]; then
           WEEK="$(date -u +%G-W%V)"
           KEY="${BASE}-${WEEK}"
+          echo "📅 Weekly rotation enabled → appending ${WEEK}"
         else
           KEY="${BASE}"
+          echo "📅 Weekly rotation disabled"
         fi
 
         LISTS_DIR="$HOME/apt-cache/${KEY}/lists"
@@ -62,9 +75,12 @@ runs:
         echo "LISTS_KEY=${KEY}" >> "$GITHUB_ENV"
         echo "LISTS_DIR=${LISTS_DIR}" >> "$GITHUB_ENV"
 
-        echo "APT lists cache key: ${KEY}"
-        echo "APT lists cache dir: ${LISTS_DIR}"
+        echo "✅ APT lists cache KEY=${KEY}"
+        echo "📁 APT lists cache DIR=${LISTS_DIR}"
 
+    ###########################################################################
+    # 2. RESTORE APT LISTS CACHE
+    ###########################################################################
     - name: Restore APT lists cache
       if: runner.os == 'Linux' && steps.meta.outputs.enabled == 'true'
       id: restore
@@ -73,11 +89,18 @@ runs:
         path: ${{ steps.meta.outputs.lists_dir }}
         key: ${{ steps.meta.outputs.lists_key }}
 
+    ###########################################################################
+    # 3. SEED OR UPDATE APT LISTS
+    ###########################################################################
     - name: Seed or update APT lists
       if: runner.os == 'Linux' && steps.meta.outputs.enabled == 'true'
       shell: bash
       run: |
         set -euo pipefail
+
+        echo "────────────────────────────────────────────────────────"
+        echo "📦 Seeding / updating APT package lists"
+        echo "────────────────────────────────────────────────────────"
 
         LISTS_DIR="${{ steps.meta.outputs.lists_dir }}"
 
@@ -85,34 +108,45 @@ runs:
 
         SEEDED=0
         if compgen -G "${LISTS_DIR}/*" > /dev/null; then
-          echo "Seeding /var/lib/apt/lists from ${LISTS_DIR}..."
+          echo "🔄 Seeding /var/lib/apt/lists from ${LISTS_DIR}..."
           sudo find "${LISTS_DIR}" -maxdepth 1 -type f -exec cp --update=none {} /var/lib/apt/lists/ \;
           SEEDED=1
+          echo "✅ Seed completed"
+        else
+          echo "ℹ️  No previous lists found in cache"
         fi
 
         NEED_UPDATE=1
         if [ "$SEEDED" = "1" ]; then
           if sudo find /var/lib/apt/lists -maxdepth 1 -type f -name '*_Packages' | grep -q .; then
             NEED_UPDATE=0
-            echo "Restored lists look usable; skipping apt-get update"
+            echo "✅ Restored lists look usable → skipping apt-get update"
+          else
+            echo "⚠️  Restored lists incomplete → will run apt-get update"
           fi
         fi
 
         if [ "$NEED_UPDATE" = "1" ]; then
-          echo "Running apt-get update..."
+          echo "🔄 Running apt-get update..."
           sudo apt-get update -qq
+          echo "✅ apt-get update finished"
 
-          echo "Saving lists into ${LISTS_DIR}..."
+          echo "💾 Saving lists into ${LISTS_DIR}..."
           mkdir -p "${LISTS_DIR}"
           sudo find /var/lib/apt/lists -maxdepth 1 -type f -exec cp --update=none {} "${LISTS_DIR}/" \;
           sudo chown -R "$(id -u):$(id -g)" "${LISTS_DIR}" || true
           echo "lists_updated=true" >> "$GITHUB_ENV"
+          echo "✅ Lists saved to cache directory"
         else
           echo "lists_updated=false" >> "$GITHUB_ENV"
         fi
 
         echo "APT_LISTS_FRESH=1" >> "$GITHUB_ENV"
+        echo "✅ APT lists ready (APT_LISTS_FRESH=1)"
 
+    ###########################################################################
+    # 4. SAVE APT LISTS CACHE
+    ###########################################################################
     - name: Save APT lists cache
       if: >-
         runner.os == 'Linux'

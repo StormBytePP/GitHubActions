@@ -43,6 +43,10 @@ runs:
       run: |
         set -euo pipefail
 
+        echo "────────────────────────────────────────────────────────"
+        echo "🔍 Resolving versions and validating toolchain"
+        echo "────────────────────────────────────────────────────────"
+
         TOOLCHAIN="${{ inputs.toolchain }}"
         VER="${{ inputs.version }}"
         OS="${{ runner.os }}"
@@ -71,7 +75,7 @@ runs:
             ;;
         esac
 
-        echo "Resolved toolchain=$TOOLCHAIN on $OS"
+        echo "✅ Resolved toolchain=$TOOLCHAIN on $OS (version=${VER:-default})"
 
     ###########################################################################
     # 1. LINUX (via install-cached)
@@ -98,9 +102,14 @@ runs:
       run: |
         set -euo pipefail
 
+        echo "────────────────────────────────────────────────────────"
+        echo "🔧 Registering compiler alternatives (Linux)"
+        echo "────────────────────────────────────────────────────────"
+
         if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-${{ env.GCC_VERSION }} 140
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-${{ env.GCC_VERSION }} 140
+          echo "✅ Registered gcc/g++ ${{ env.GCC_VERSION }}"
         else
           sudo update-alternatives --remove-all clang  || true
           sudo update-alternatives --remove-all clang++ || true
@@ -110,6 +119,7 @@ runs:
           sudo update-alternatives --remove-all lld || true
           sudo update-alternatives --install /usr/bin/lld lld /usr/bin/lld-${{ env.CLANG_VERSION }} 200
           sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-${{ env.CLANG_VERSION }} 200
+          echo "✅ Registered clang/clang++/lld ${{ env.CLANG_VERSION }}"
         fi
 
     ###########################################################################
@@ -134,19 +144,23 @@ runs:
       run: |
         set -euo pipefail
 
+        echo "────────────────────────────────────────────────────────"
+        echo "🍎 Configuring macOS compiler PATH"
+        echo "────────────────────────────────────────────────────────"
+
         if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
           PREFIX="$(brew --prefix "gcc@${{ env.GCC_VERSION }}")"
           echo "${PREFIX}/bin" >> "$GITHUB_PATH"
           echo "PATH += ${PREFIX}/bin (Homebrew gcc)"
           command -v gcc >/dev/null
-          echo "gcc: $(command -v gcc)"
+          echo "✅ gcc: $(command -v gcc)"
         else
           # Apple Clang from Xcode / CLT — correct macOS SDK (time.h, etc.)
           echo "Using Apple Clang (Xcode); skipping Homebrew llvm"
           command -v clang >/dev/null
           command -v clang++ >/dev/null
-          echo "clang:  $(command -v clang)"
-          echo "clang++: $(command -v clang++)"
+          echo "✅ clang:  $(command -v clang)"
+          echo "✅ clang++: $(command -v clang++)"
           clang --version | head -n 2 || true
         fi
 
@@ -165,6 +179,10 @@ runs:
       run: |
         set -euo pipefail
 
+        echo "────────────────────────────────────────────────────────"
+        echo "🐍 Installing Meson via pip"
+        echo "────────────────────────────────────────────────────────"
+
         PY=""
         for c in python3 python; do
           if command -v "$c" >/dev/null 2>&1; then
@@ -173,7 +191,7 @@ runs:
           fi
         done
         if [ -z "$PY" ]; then
-          echo "python not found after setup-python"
+          echo "❌ python not found after setup-python"
           exit 1
         fi
 
@@ -206,11 +224,13 @@ runs:
           case "$VER" in
             $EXPECTED) ;;
             *)
-              echo "Expected Meson 1.10.0 from pip, got: ${VER:-missing}"
+              echo "❌ Expected Meson 1.10.0 from pip, got: ${VER:-missing}"
               exit 1
               ;;
           esac
         fi
+
+        echo "✅ Meson installed successfully"
 
     ###########################################################################
     # 4. WINDOWS – MSVC env + sccache binary (pinned release)
@@ -227,6 +247,11 @@ runs:
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
+
+        Write-Host "────────────────────────────────────────────────────────"
+        Write-Host "📦 Installing sccache binary (Windows)"
+        Write-Host "────────────────────────────────────────────────────────"
+
         $version = "0.10.0"
         $extractDir = "$env:RUNNER_TEMP\sccache"
         $zipName = "sccache-v$version-x86_64-pc-windows-msvc"
@@ -248,6 +273,8 @@ runs:
         Write-Host "sccache installed: $sccacheExe"
         & $sccacheExe --version
 
+        Write-Host "✅ sccache ready"
+
     ###########################################################################
     # 5. OUTPUTS
     ###########################################################################
@@ -255,6 +282,10 @@ runs:
       id: set-outputs
       shell: bash
       run: |
+        echo "────────────────────────────────────────────────────────"
+        echo "📤 Setting compiler outputs"
+        echo "────────────────────────────────────────────────────────"
+
         TOOL="${{ inputs.toolchain }}"
         OS="${{ runner.os }}"
 
@@ -276,4 +307,4 @@ runs:
 
         echo "c_compiler=$C_COMPILER" >> "$GITHUB_OUTPUT"
         echo "cxx_compiler=$CXX_COMPILER" >> "$GITHUB_OUTPUT"
-        echo "Final compilers → CC=$C_COMPILER  CXX=$CXX_COMPILER"
+        echo "✅ Final compilers → CC=$C_COMPILER  CXX=$CXX_COMPILER"
