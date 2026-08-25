@@ -19,7 +19,7 @@ inputs:
     description: "Non-empty also installs ccache (Linux/macOS) or sccache (Windows). Empty = skip"
     default: ""
   install-meson:
-    description: "Install Meson 1.10.0 via pip (default: true)"
+    description: "Install Meson via pip (default: true). Pinned to 1.10.0 on Windows only; latest on Linux/macOS"
     default: "true"
 
 outputs:
@@ -159,7 +159,7 @@ runs:
       with:
         python-version: "3.x"
 
-    - name: Install Meson 1.10.0 (pip only)
+    - name: Install Meson (pip)
       if: inputs.install-meson == 'true'
       shell: bash
       run: |
@@ -180,7 +180,17 @@ runs:
         echo "Python: $($PY -c 'import sys; print(sys.executable)')"
         $PY -m pip install --upgrade pip
         $PY -m pip uninstall -y meson 2>/dev/null || true
-        $PY -m pip install --force-reinstall --no-cache-dir 'meson==1.10.0'
+
+        # Pin only on Windows; on Linux/macOS install the latest version
+        if [[ "${{ runner.os }}" == "Windows" ]]; then
+          MESON_SPEC='meson==1.10.0'
+          EXPECTED='1.10.0*'
+        else
+          MESON_SPEC='meson'
+          EXPECTED=''
+        fi
+
+        $PY -m pip install --force-reinstall --no-cache-dir "$MESON_SPEC"
 
         SCRIPTS="$($PY -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
         if [ -n "$SCRIPTS" ] && [ -d "$SCRIPTS" ]; then
@@ -192,13 +202,15 @@ runs:
         echo "meson on PATH: $(command -v meson || echo none)"
         echo "meson --version: ${VER:-unknown}"
 
-        case "$VER" in
-          1.10.0*) ;;
-          *)
-            echo "Expected Meson 1.10.0 from pip, got: ${VER:-missing}"
-            exit 1
-            ;;
-        esac
+        if [[ -n "$EXPECTED" ]]; then
+          case "$VER" in
+            $EXPECTED) ;;
+            *)
+              echo "Expected Meson 1.10.0 from pip, got: ${VER:-missing}"
+              exit 1
+              ;;
+          esac
+        fi
 
     ###########################################################################
     # 4. WINDOWS – MSVC env + sccache binary (pinned release)
