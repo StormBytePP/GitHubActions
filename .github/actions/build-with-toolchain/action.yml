@@ -20,9 +20,9 @@ inputs:
   cache-scope:
     description: >
       Extra uniqueness per matrix cell / parallel job. Composite actions cannot
-      see matrix context; pass it from the workflow, e.g. cache-scope set to
-      matrix.extra or matrix.os-matrix.extra (from the caller workflow).
-      Empty is fine if ccache-key already differs per matrix cell.
+      see the matrix context; pass the value from the workflow (e.g. the matrix
+      extra field, or os-extra). Empty is fine if ccache-key already differs
+      per matrix cell.
     required: false
     default: ""
 
@@ -111,7 +111,6 @@ runs:
           exit 1
         fi
 
-        # Actions cache keys: keep [A-Za-z0-9._-]
         sanitize() {
           echo "$1" | sed 's/[^A-Za-z0-9._-]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//'
         }
@@ -142,13 +141,11 @@ runs:
           echo "📁 CCACHE_DIR=${CCACHE_DIR}"
         fi
 
-        # One namespace per OS + toolchain + suffix + job (+ optional matrix scope)
         KEY="${PREFIX}-${OS}-${TOOL_S}-${SUFFIX_S}-${JOB_S}"
         if [ -n "$SCOPE_S" ]; then
           KEY="${KEY}-${SCOPE_S}"
         fi
 
-        # Immutable save key: unique per run and per re-run attempt
         SAVE_KEY="${KEY}-${{ github.run_id }}-${{ github.run_attempt }}"
 
         echo "cache_key=${KEY}" >> "$GITHUB_OUTPUT"
@@ -284,7 +281,8 @@ runs:
         fi
 
     ###########################################################################
-    # 1b. FORCE LLD FOR CLANG (Linux only)
+    # 1b. FORCE LLD + MATCHING LLVM BINUTILS (Clang on Linux) — fix LTO/x265
+    # Restores 048f7df; avoids: Producer LLVM20 / Reader LLVM16 via bfd+gold
     ###########################################################################
     - name: Force lld for Clang
       if: runner.os == 'Linux' && (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++')
@@ -292,22 +290,65 @@ runs:
       run: |
         set -euo pipefail
 
-        echo "🔗 Forcing lld linker for ${{ inputs.toolchain }}..."
+        echo "🔗 Forcing lld + LLVM binutils for ${{ inputs.toolchain }}..."
 
-        if ! command -v ld.lld >/dev/null 2>&1 && ! command -v lld >/dev/null 2>&1; then
-          echo "::error::lld not found on PATH (install-toolchain should provide it)"
+        VER="${CLANG_VERSION:-}"
+        if [ -z "$VER" ]; then
+          VER="$(clang --version 2>/dev/null | sed -n 's/.*clang version \([0-9]\+\).*/\1/p' | head -1)"
+        fi
+        if [ -z "$VER" ]; then
+          echo "::error::Could not resolve CLANG_VERSION"
+          exit 1
+        fi
+        echo "CLANG_VERSION=${VER}"
+
+        if ! command -v "ld.lld-${VER}" >/dev/null 2>&1 && ! command -v ld.lld >/dev/null 2>&1; then
+          echo "::error::ld.lld not found (install-toolchain should provide lld-${VER})"
           exit 1
         fi
 
-        echo "ld.lld: $(command -v ld.lld 2>/dev/null || true)"
-        echo "lld:    $(command -v lld 2>/dev/null || true)"
+        LLD="$(command -v ld.lld-${VER} 2>/dev/null || command -v ld.lld)"
+        AR="$(command -v llvm-ar-${VER} 2>/dev/null || command -v llvm-ar || true)"
+        RANLIB="$(command -v llvm-ranlib-${VER} 2>/dev/null || command -v llvm-ranlib || true)"
+        NM="$(command -v llvm-nm-${VER} 2>/dev/null || command -v llvm-nm || true)"
 
-        echo "CMAKE_EXE_LINKER_FLAGS_INIT=-fuse-ld=lld"    >> "$GITHUB_ENV"
-        echo "CMAKE_SHARED_LINKER_FLAGS_INIT=-fuse-ld=lld" >> "$GITHUB_ENV"
-        echo "CMAKE_MODULE_LINKER_FLAGS_INIT=-fuse-ld=lld" >> "$GITHUB_ENV"
-        echo "LDFLAGS=-fuse-ld=lld" >> "$GITHUB_ENV"
+        echo "ld.lld:  ${LLD}"
+        "$LLD" --version 2>/dev/null | head -1 || true
+        echo "llvm-ar: ${AR:-<missing — install llvm-${VER} in install-toolchain>}"
 
-        echo "✅ Forced -fuse-ld=lld for ${{ inputs.toolchain }}"
+        {
+          echo "LDFLAGS=-fuse-ld=lld"
+          echo "CMAKE_EXE_LINKER_FLAGS_INIT=-fuse-ld=lld"
+          echo "CMAKE_SHARED_LINKER_FLAGS_INIT=-fuse-ld=lld"
+          echo "CMAKE_MODULE_LINKER_FLAGS_INIT=-fuse-ld=lld"
+          echo "CMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld"
+          echo "CMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld"
+          echo "CMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld"
+        } >> "$GITHUB_ENV"
+
+        if [ -n "$AR" ]; then
+          echo "AR=${AR}" >> "$GITHUB_ENV"
+          echo "CMAKE_AR=${AR}" >> "$GITHUB_ENV"
+          echo "CMAKE_C_COMPILER_AR=${AR}" >> "$GITHUB_ENV"
+          echo "CMAKE_CXX_COMPILER_AR=${AR}" >> "$GITHUB_ENV"
+        else
+          echo "::warning::llvm-ar-${VER} not found; LTO static libs may still hit bfd/gold mismatch"
+        fi
+        if [ -n "$RANLIB" ]; then
+          echo "RANLIB=${RANLIB}" >> "$GITHUB_ENV"
+          echo "CMAKE_RANLIB=${RANLIB}" >> "$GITHUB_ENV"
+          echo "CMAKE_C_COMPILER_RANLIB=${RANLIB}" >> "$GITHUB_ENV"
+          echo "CMAKE_CXX_COMPILER_RANLIB=${RANLIB}" >> "$GITHUB_ENV"
+        fi
+        if [ -n "$NM" ]; then
+          echo "NM=${NM}" >> "$GITHUB_ENV"
+          echo "CMAKE_NM=${NM}" >> "$GITHUB_ENV"
+        fi
+
+        echo "CC=$(command -v clang-${VER} 2>/dev/null || command -v clang)" >> "$GITHUB_ENV"
+        echo "CXX=$(command -v clang++-${VER} 2>/dev/null || command -v clang++)" >> "$GITHUB_ENV"
+
+        echo "✅ Forced -fuse-ld=lld and LLVM ${VER} binutils for nested LTO builds"
 
     ###########################################################################
     # 1c. RESTORE COMPILER CACHE
@@ -423,8 +464,6 @@ runs:
           exit 1
         }
 
-        # Capture the banner. link.exe returns exit code 1 when showing help,
-        # so we explicitly reset $LASTEXITCODE afterwards.
         $bannerText = cmd /c "link.exe 2>&1" | Out-String
         $LASTEXITCODE = 0
 
@@ -742,7 +781,7 @@ runs:
         key: ${{ steps.cachekeys.outputs.downloads_save_key }}
 
     ###########################################################################
-    # 8. CLEANUP OLD CACHES (keep only the entry just saved for this namespace)
+    # 8. CLEANUP OLD CACHES
     ###########################################################################
     - name: Cleanup old ccache entries
       if: always() && (runner.os == 'Linux' || runner.os == 'macOS') && inputs.ccache-key != ''

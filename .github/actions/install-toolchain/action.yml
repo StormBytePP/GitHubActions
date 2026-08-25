@@ -89,11 +89,11 @@ runs:
           build-essential
           cmake
           ${{ inputs.toolchain == 'gcc' && format('gcc-{0} g++-{0}', env.GCC_VERSION) || '' }}
-          ${{ (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++') && format('clang-{0} clang++-{0} lld-{0}', env.CLANG_VERSION) || '' }}
+          ${{ (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++') && format('clang-{0} clang++-{0} lld-{0} llvm-{0}', env.CLANG_VERSION) || '' }}
           ${{ inputs.toolchain == 'clang-libc++' && format('libc++-{0}-dev libc++abi-{0}-dev', env.CLANG_VERSION) || '' }}
           ${{ inputs.ccache-key != '' && 'ccache' || '' }}
           ${{ inputs.docs == 'true' && 'doxygen graphviz' || '' }}
-        cache-key: apt-toolchain-${{ inputs.toolchain }}-${{ env.TOOLCHAIN_VERSION }}-v1
+        cache-key: apt-toolchain-${{ inputs.toolchain }}-${{ env.TOOLCHAIN_VERSION }}-v2
         unique: true
 
     - name: Register compiler alternatives (Linux)
