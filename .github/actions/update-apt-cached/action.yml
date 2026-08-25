@@ -84,7 +84,7 @@ runs:
     - name: Restore APT lists cache
       if: runner.os == 'Linux' && steps.meta.outputs.enabled == 'true'
       id: restore
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: ${{ steps.meta.outputs.lists_dir }}
         key: ${{ steps.meta.outputs.lists_key }}
@@ -153,7 +153,7 @@ runs:
         && steps.meta.outputs.enabled == 'true'
         && steps.restore.outputs.cache-hit != 'true'
         && env.lists_updated == 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: ${{ steps.meta.outputs.lists_dir }}
         key: ${{ steps.meta.outputs.lists_key }}

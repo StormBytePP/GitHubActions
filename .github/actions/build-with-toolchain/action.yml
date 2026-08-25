@@ -421,7 +421,7 @@ runs:
     - name: Restore ccache
       id: restore-ccache
       if: inputs.ccache-key != '' && (runner.os == 'Linux' || runner.os == 'macOS')
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: ${{ env.CCACHE_DIR }}
         key: ${{ steps.cachekeys.outputs.save_key }}
@@ -432,7 +432,7 @@ runs:
     - name: Restore sccache
       id: restore-sccache
       if: inputs.ccache-key != '' && runner.os == 'Windows'
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: ${{ env.SCCACHE_DIR }}
         key: ${{ steps.cachekeys.outputs.save_key }}
@@ -446,7 +446,7 @@ runs:
     - name: Restore downloads cache
       id: restore-downloads
       if: inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: ${{ steps.buildmaster.outputs.downloads_dir }}
         key: ${{ steps.cachekeys.outputs.downloads_save_key }}
@@ -890,7 +890,7 @@ runs:
     - name: Save ccache
       if: always() && (runner.os == 'Linux' || runner.os == 'macOS') && inputs.ccache-key != ''
       continue-on-error: true
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: ${{ env.CCACHE_DIR }}
         key: ${{ steps.cachekeys.outputs.save_key }}
@@ -898,7 +898,7 @@ runs:
     - name: Save sccache
       if: always() && runner.os == 'Windows' && inputs.ccache-key != ''
       continue-on-error: true
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: ${{ env.SCCACHE_DIR }}
         key: ${{ steps.cachekeys.outputs.save_key }}
@@ -909,7 +909,7 @@ runs:
     - name: Save downloads cache
       if: always() && inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
       continue-on-error: true
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: ${{ steps.buildmaster.outputs.downloads_dir }}
         key: ${{ steps.cachekeys.outputs.downloads_save_key }}
@@ -920,7 +920,7 @@ runs:
     - name: Cleanup old ccache entries
       if: always() && (runner.os == 'Linux' || runner.os == 'macOS') && inputs.ccache-key != ''
       continue-on-error: true
-      uses: actions/github-script@v7
+      uses: actions/github-script@v9
       with:
         script: |
           const keyPrefix = `${{ steps.cachekeys.outputs.cache_key }}-`;
@@ -948,7 +948,7 @@ runs:
     - name: Cleanup old sccache entries
       if: always() && runner.os == 'Windows' && inputs.ccache-key != ''
       continue-on-error: true
-      uses: actions/github-script@v7
+      uses: actions/github-script@v9
       with:
         script: |
           const keyPrefix = `${{ steps.cachekeys.outputs.cache_key }}-`;
@@ -976,7 +976,7 @@ runs:
     - name: Cleanup old downloads cache entries
       if: always() && inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
       continue-on-error: true
-      uses: actions/github-script@v7
+      uses: actions/github-script@v9
       with:
         script: |
           const keyPrefix = `${{ steps.cachekeys.outputs.downloads_cache_key }}-`;

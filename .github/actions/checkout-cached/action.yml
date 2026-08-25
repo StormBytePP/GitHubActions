@@ -65,7 +65,7 @@ runs:
     # 1. CHECKOUT PARENT (never fetch submodules here)
     ###########################################################################
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: ${{ inputs.fetch-depth }}
         submodules: false
@@ -139,7 +139,7 @@ runs:
     - name: Restore submodule cache
       if: inputs.submodules != 'false' && steps.meta.outputs.has_submodules == 'true'
       id: cache
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: ${{ steps.meta.outputs.cache_paths }}
         key: ${{ steps.meta.outputs.cache_key }}
@@ -256,7 +256,7 @@ runs:
         inputs.submodules != 'false'
         && steps.meta.outputs.has_submodules == 'true'
         && steps.cache.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: ${{ steps.meta.outputs.cache_paths }}
         key: ${{ steps.meta.outputs.cache_key }}

@@ -234,7 +234,7 @@ runs:
     - name: Restore APT lists cache
       if: runner.os == 'Linux' && steps.lists.outputs.enabled == 'true'
       id: restore-lists
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: ${{ steps.lists.outputs.lists_dir }}
         key: ${{ steps.lists.outputs.lists_key }}
@@ -310,7 +310,7 @@ runs:
     - name: Restore APT debs cache
       if: runner.os == 'Linux' && inputs.cache-key != '' && steps.pkgs.outputs.empty != 'true'
       id: restore-debs
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: ${{ env.DEBS_DIR }}
         key: ${{ env.DEBS_KEY }}
@@ -386,7 +386,7 @@ runs:
         && inputs.cache-key != ''
         && steps.pkgs.outputs.empty != 'true'
         && steps.restore-debs.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: ${{ env.DEBS_DIR }}
         key: ${{ env.DEBS_KEY }}

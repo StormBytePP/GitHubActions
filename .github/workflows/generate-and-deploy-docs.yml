@@ -60,7 +60,7 @@ jobs:
           docs_source_dir: ${{ inputs.docs_source_dir }}
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: ${{ inputs.docs_output_dir }}
 
