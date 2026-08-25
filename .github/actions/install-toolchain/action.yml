@@ -7,13 +7,13 @@ branding:
 
 inputs:
   toolchain:
-    description: "gcc, clang, clang-libc++ (Linux/macOS) or msvc (Windows)"
+    description: "gcc, clang, clang-libc++ (Linux/macOS); msvc or clang-cl (Windows)"
     required: true
   docs:
     description: "Install documentation tools (doxygen + graphviz). Linux & macOS only"
     default: "false"
   version:
-    description: "Optional major version for gcc/clang (default: 14 for gcc, 20 for clang). Ignored for Apple Clang on macOS."
+    description: "Optional major version for gcc/clang (default: 14 for gcc, 20 for clang). Ignored for Apple Clang on macOS and for msvc/clang-cl."
     default: ""
   ccache-key:
     description: "Non-empty also installs ccache (Linux/macOS) or sccache (Windows). Empty = skip"
@@ -62,12 +62,12 @@ runs:
             echo "GCC_VERSION=14" >> "$GITHUB_ENV"
             echo "TOOLCHAIN_VERSION=${VER:-20}" >> "$GITHUB_ENV"
             ;;
-          msvc)
+          msvc|clang-cl)
             if [[ "$OS" != "Windows" ]]; then
-              echo "::error::msvc is only supported on Windows"
+              echo "::error::${TOOLCHAIN} is only supported on Windows"
               exit 1
             fi
-            echo "TOOLCHAIN_VERSION=msvc" >> "$GITHUB_ENV"
+            echo "TOOLCHAIN_VERSION=${TOOLCHAIN}" >> "$GITHUB_ENV"
             ;;
           *)
             echo "::error::Unsupported toolchain: $TOOLCHAIN"
@@ -124,8 +124,6 @@ runs:
 
     ###########################################################################
     # 2. macOS
-    #    clang / clang-libc++ → Apple Clang (Xcode); do NOT install Homebrew llvm
-    #    gcc                 → Homebrew gcc@N
     ###########################################################################
     - name: Install macOS packages
       if: runner.os == 'macOS'
@@ -155,7 +153,6 @@ runs:
           command -v gcc >/dev/null
           echo "✅ gcc: $(command -v gcc)"
         else
-          # Apple Clang from Xcode / CLT — correct macOS SDK (time.h, etc.)
           echo "Using Apple Clang (Xcode); skipping Homebrew llvm"
           command -v clang >/dev/null
           command -v clang++ >/dev/null
@@ -165,7 +162,7 @@ runs:
         fi
 
     ###########################################################################
-    # 3. MESON (pip — not a system package manager)
+    # 3. MESON (pip)
     ###########################################################################
     - name: Setup Python
       if: inputs.install-meson == 'true'
@@ -199,7 +196,6 @@ runs:
         $PY -m pip install --upgrade pip
         $PY -m pip uninstall -y meson 2>/dev/null || true
 
-        # Pin only on Windows; on Linux/macOS install the latest version
         if [[ "${{ runner.os }}" == "Windows" ]]; then
           MESON_SPEC='meson==1.10.0'
           EXPECTED='1.10.0*'
@@ -233,13 +229,76 @@ runs:
         echo "✅ Meson installed successfully"
 
     ###########################################################################
-    # 4. WINDOWS – MSVC env + sccache binary (pinned release)
+    # 4. WINDOWS – MSVC env (+ clang-cl if requested) + sccache
     ###########################################################################
     - name: Setup MSVC environment
       if: runner.os == 'Windows'
       uses: ilammy/msvc-dev-cmd@v1
       with:
         arch: x64
+
+    - name: Ensure clang-cl is available
+      if: runner.os == 'Windows' && inputs.toolchain == 'clang-cl'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        Write-Host "────────────────────────────────────────────────────────"
+        Write-Host "🔍 Ensuring clang-cl is available"
+        Write-Host "────────────────────────────────────────────────────────"
+
+        function Find-ClangCl {
+          $cmd = Get-Command clang-cl.exe -ErrorAction SilentlyContinue
+          if ($cmd) { return $cmd.Source }
+
+          $candidates = @(
+            "${env:ProgramFiles}\LLVM\bin\clang-cl.exe",
+            "${env:ProgramFiles(x86)}\LLVM\bin\clang-cl.exe",
+            "${env:VCINSTALLDIR}Tools\Llvm\x64\bin\clang-cl.exe",
+            "${env:VCINSTALLDIR}Tools\Llvm\bin\clang-cl.exe"
+          )
+
+          # VS-bundled LLVM (various editions/years)
+          $vsRoots = @(
+            "${env:ProgramFiles}\Microsoft Visual Studio",
+            "${env:ProgramFiles(x86)}\Microsoft Visual Studio"
+          )
+          foreach ($root in $vsRoots) {
+            if (-not (Test-Path $root)) { continue }
+            Get-ChildItem -Path $root -Recurse -Filter "clang-cl.exe" -ErrorAction SilentlyContinue |
+              Select-Object -First 5 |
+              ForEach-Object { $candidates += $_.FullName }
+          }
+
+          foreach ($p in $candidates) {
+            if ($p -and (Test-Path $p)) { return $p }
+          }
+          return $null
+        }
+
+        $clangCl = Find-ClangCl
+        if (-not $clangCl) {
+          Write-Host "clang-cl not found; installing LLVM via Chocolatey..."
+          choco install llvm -y --no-progress
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to install LLVM (clang-cl)"
+            exit 1
+          }
+          $clangCl = Find-ClangCl
+        }
+
+        if (-not $clangCl) {
+          Write-Error "clang-cl.exe still not found after install"
+          exit 1
+        }
+
+        $binDir = Split-Path -Parent $clangCl
+        $binDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        $env:Path = "$binDir;$env:Path"
+
+        Write-Host "clang-cl: $clangCl"
+        & $clangCl --version
+        Write-Host "✅ clang-cl ready"
 
     - name: Install sccache binary
       if: runner.os == 'Windows' && inputs.ccache-key != ''
@@ -290,8 +349,16 @@ runs:
         OS="${{ runner.os }}"
 
         if [[ "$OS" == "Windows" ]]; then
-          C_COMPILER="cl"
-          CXX_COMPILER="cl"
+          case "$TOOL" in
+            clang-cl)
+              C_COMPILER="clang-cl"
+              CXX_COMPILER="clang-cl"
+              ;;
+            *)
+              C_COMPILER="cl"
+              CXX_COMPILER="cl"
+              ;;
+          esac
         else
           case "$TOOL" in
             gcc)

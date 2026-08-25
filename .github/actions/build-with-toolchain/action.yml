@@ -7,7 +7,7 @@ branding:
 
 inputs:
   toolchain:
-    description: "gcc, clang, clang-libc++, or msvc"
+    description: "gcc, clang, clang-libc++, msvc, or clang-cl (Windows only)"
     required: true
 
   ccache-key:
@@ -75,6 +75,7 @@ inputs:
     description: >
       Windows only. If true (default), pass CMP0141=NEW and
       CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded (/Z7).
+      Applies to msvc and clang-cl.
     required: false
     default: "true"
 
@@ -207,7 +208,7 @@ runs:
         fi
 
     ###########################################################################
-    # 1. INSTALL TOOLCHAIN
+    # 1. INSTALL TOOLCHAIN (install-toolchain handles clang-cl installation)
     ###########################################################################
     - name: Install toolchain
       id: toolchain
@@ -276,13 +277,12 @@ runs:
             echo "✅ ccache ready (dir=${CCACHE_DIR})"
             ccache -s || true
           else
-            echo "⚠️  WARNING: ccache not on PATH after install-toolchain"
+            echo "⚠️  WARNING: ccache not found in PATH after install-toolchain"
           fi
         fi
 
     ###########################################################################
     # 1b. FORCE LLD + MATCHING LLVM BINUTILS (Clang on Linux) — fix LTO/x265
-    # Restores 048f7df; avoids: Producer LLVM20 / Reader LLVM16 via bfd+gold
     ###########################################################################
     - name: Force lld for Clang
       if: runner.os == 'Linux' && (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++')
@@ -397,7 +397,7 @@ runs:
         echo "📁 Downloads directory ready: ${{ steps.buildmaster.outputs.downloads_dir }}"
 
     ###########################################################################
-    # 1e. WINDOWS: sanitize PATH for MSVC linker
+    # 1e. WINDOWS: sanitize PATH for MSVC linker (msvc + clang-cl)
     ###########################################################################
     - name: Sanitize PATH for MSVC linker
       if: runner.os == 'Windows'
@@ -545,14 +545,22 @@ runs:
         Write-Host "   Toolchain  : ${{ inputs.toolchain }}"
         Write-Host "────────────────────────────────────────────────────────"
 
+        $cCompiler = "${{ steps.toolchain.outputs.c_compiler }}"
+        $cxxCompiler = "${{ steps.toolchain.outputs.cxx_compiler }}"
+        if ([string]::IsNullOrWhiteSpace($cCompiler))  { $cCompiler = "cl" }
+        if ([string]::IsNullOrWhiteSpace($cxxCompiler)) { $cxxCompiler = "cl" }
+
+        Write-Host "   C compiler  : $cCompiler"
+        Write-Host "   CXX compiler: $cxxCompiler"
+
         $cmakeArgs = [System.Collections.Generic.List[string]]::new()
         foreach ($a in @(
           "-S", ".",
           "-B", "${{ inputs.build-dir }}",
           "-G", "Ninja",
           "-DCMAKE_BUILD_TYPE=${{ inputs.build-type }}",
-          "-DCMAKE_C_COMPILER=cl",
-          "-DCMAKE_CXX_COMPILER=cl"
+          "-DCMAKE_C_COMPILER=$cCompiler",
+          "-DCMAKE_CXX_COMPILER=$cxxCompiler"
         )) {
           $cmakeArgs.Add($a)
         }
@@ -564,7 +572,7 @@ runs:
         }
 
         if ("${{ inputs.ccache-key }}" -ne "" -and (Get-Command sccache -ErrorAction SilentlyContinue)) {
-          Write-Host "📦 Using sccache launcher"
+          Write-Host "📦 Using sccache launcher (msvc / clang-cl)"
           $cmakeArgs.Add("-DCMAKE_C_COMPILER_LAUNCHER=sccache")
           $cmakeArgs.Add("-DCMAKE_CXX_COMPILER_LAUNCHER=sccache")
 
@@ -751,7 +759,7 @@ runs:
         echo "✅ Tests finished"
 
     ###########################################################################
-    # 6. SAVE COMPILER CACHE (always: keep partial compile results)
+    # 6. SAVE COMPILER CACHE
     ###########################################################################
     - name: Save ccache
       if: always() && (runner.os == 'Linux' || runner.os == 'macOS') && inputs.ccache-key != ''
