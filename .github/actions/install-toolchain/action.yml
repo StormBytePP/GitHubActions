@@ -229,7 +229,7 @@ runs:
         echo "✅ Meson installed successfully"
 
     ###########################################################################
-    # 4. WINDOWS – MSVC env (+ clang-cl if requested) + sccache
+    # 4. WINDOWS – MSVC env (+ clang-cl / LLVM LTO tools if requested) + sccache
     ###########################################################################
     - name: Setup MSVC environment
       if: runner.os == 'Windows'
@@ -237,37 +237,39 @@ runs:
       with:
         arch: x64
 
-    - name: Ensure clang-cl is available
+    - name: Ensure clang-cl + LLVM LTO tools are available
       if: runner.os == 'Windows' && inputs.toolchain == 'clang-cl'
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
 
         Write-Host "────────────────────────────────────────────────────────"
-        Write-Host "🔍 Ensuring clang-cl is available"
+        Write-Host "🔍 Ensuring clang-cl + LTO tools (lld-link, llvm-lib, llvm-ar)"
         Write-Host "────────────────────────────────────────────────────────"
 
-        function Find-ClangCl {
-          $cmd = Get-Command clang-cl.exe -ErrorAction SilentlyContinue
+        function Find-Tool([string]$Name) {
+          $cmd = Get-Command $Name -ErrorAction SilentlyContinue
           if ($cmd) { return $cmd.Source }
 
-          $candidates = @(
-            "${env:ProgramFiles}\LLVM\bin\clang-cl.exe",
-            "${env:ProgramFiles(x86)}\LLVM\bin\clang-cl.exe",
-            "${env:VCINSTALLDIR}Tools\Llvm\x64\bin\clang-cl.exe",
-            "${env:VCINSTALLDIR}Tools\Llvm\bin\clang-cl.exe"
-          )
+          $candidates = [System.Collections.Generic.List[string]]::new()
+          foreach ($base in @(
+            "${env:ProgramFiles}\LLVM\bin",
+            "${env:ProgramFiles(x86)}\LLVM\bin",
+            "${env:VCINSTALLDIR}Tools\Llvm\x64\bin",
+            "${env:VCINSTALLDIR}Tools\Llvm\bin"
+          )) {
+            if ($base) { $candidates.Add((Join-Path $base $Name)) }
+          }
 
-          # VS-bundled LLVM (various editions/years)
           $vsRoots = @(
             "${env:ProgramFiles}\Microsoft Visual Studio",
             "${env:ProgramFiles(x86)}\Microsoft Visual Studio"
           )
           foreach ($root in $vsRoots) {
             if (-not (Test-Path $root)) { continue }
-            Get-ChildItem -Path $root -Recurse -Filter "clang-cl.exe" -ErrorAction SilentlyContinue |
+            Get-ChildItem -Path $root -Recurse -Filter $Name -ErrorAction SilentlyContinue |
               Select-Object -First 5 |
-              ForEach-Object { $candidates += $_.FullName }
+              ForEach-Object { $candidates.Add($_.FullName) }
           }
 
           foreach ($p in $candidates) {
@@ -276,29 +278,66 @@ runs:
           return $null
         }
 
-        $clangCl = Find-ClangCl
-        if (-not $clangCl) {
-          Write-Host "clang-cl not found; installing LLVM via Chocolatey..."
-          choco install llvm -y --no-progress
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Failed to install LLVM (clang-cl)"
+        function Require-Tool([string]$Name) {
+          $path = Find-Tool $Name
+          if (-not $path) {
+            Write-Error "$Name not found after LLVM install/search"
             exit 1
           }
-          $clangCl = Find-ClangCl
+          Write-Host "$Name : $path"
+          return $path
         }
 
-        if (-not $clangCl) {
-          Write-Error "clang-cl.exe still not found after install"
-          exit 1
+        $clangCl = Find-Tool "clang-cl.exe"
+        $needInstall = -not $clangCl
+
+        if (-not $needInstall) {
+          # Same install must also provide LTO helpers (static libs + link)
+          foreach ($t in @("lld-link.exe", "llvm-lib.exe", "llvm-ar.exe")) {
+            if (-not (Find-Tool $t)) {
+              Write-Host "Missing $t next to existing clang-cl; will (re)install LLVM package"
+              $needInstall = $true
+              break
+            }
+          }
         }
+
+        if ($needInstall) {
+          Write-Host "Installing full LLVM via Chocolatey (clang-cl, lld-link, llvm-lib, llvm-ar)..."
+          choco install llvm -y --no-progress
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to install LLVM"
+            exit 1
+          }
+        }
+
+        $clangCl = Require-Tool "clang-cl.exe"
+        $lldLink = Require-Tool "lld-link.exe"
+        $llvmLib = Require-Tool "llvm-lib.exe"
+        $llvmAr  = Require-Tool "llvm-ar.exe"
+        # Optional but useful for IPO static archives
+        $llvmRanlib = Find-Tool "llvm-ranlib.exe"
+        if ($llvmRanlib) { Write-Host "llvm-ranlib.exe : $llvmRanlib" }
 
         $binDir = Split-Path -Parent $clangCl
         $binDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         $env:Path = "$binDir;$env:Path"
 
-        Write-Host "clang-cl: $clangCl"
+        # Prefer LLVM bin over any other shadow for these tools
+        foreach ($extra in @($lldLink, $llvmLib, $llvmAr)) {
+          $d = Split-Path -Parent $extra
+          if ($d -and ($d -ne $binDir)) {
+            $d | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            $env:Path = "$d;$env:Path"
+          }
+        }
+
+        Write-Host ""
         & $clangCl --version
-        Write-Host "✅ clang-cl ready"
+        Write-Host ""
+        & $lldLink --version 2>&1 | Select-Object -First 2
+        Write-Host ""
+        Write-Host "✅ clang-cl + lld-link + llvm-lib + llvm-ar ready (IPO/static libs OK)"
 
     - name: Install sccache binary
       if: runner.os == 'Windows' && inputs.ccache-key != ''

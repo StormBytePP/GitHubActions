@@ -285,15 +285,15 @@ runs:
         fi
 
     ###########################################################################
-    # 1b. FORCE LLD + MATCHING LLVM BINUTILS (Clang on Linux only)
+    # 1b. LLVM LLD + binutils (clang family: Linux clang/clang-libc++, Win clang-cl)
     ###########################################################################
-    - name: Force lld for Clang
+    - name: Setup LLVM linker tools (Linux clang / clang-libc++)
       if: runner.os == 'Linux' && (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++')
       shell: bash
       run: |
         set -euo pipefail
 
-        echo "🔗 Forcing lld + LLVM binutils for ${{ inputs.toolchain }}..."
+        echo "🔗 Setting up lld + LLVM binutils for ${{ inputs.toolchain }}..."
 
         VER="${CLANG_VERSION:-}"
         if [ -z "$VER" ]; then
@@ -317,7 +317,7 @@ runs:
 
         echo "ld.lld:  ${LLD}"
         "$LLD" --version 2>/dev/null | head -1 || true
-        echo "llvm-ar: ${AR:-<missing — install llvm-${VER} in install-toolchain>}"
+        echo "llvm-ar: ${AR:-<missing>}"
 
         {
           echo "LDFLAGS=-fuse-ld=lld"
@@ -335,7 +335,7 @@ runs:
           echo "CMAKE_C_COMPILER_AR=${AR}" >> "$GITHUB_ENV"
           echo "CMAKE_CXX_COMPILER_AR=${AR}" >> "$GITHUB_ENV"
         else
-          echo "::warning::llvm-ar-${VER} not found; LTO static libs may still hit bfd/gold mismatch"
+          echo "::warning::llvm-ar not found; LTO static libs may hit bfd/gold mismatch"
         fi
         if [ -n "$RANLIB" ]; then
           echo "RANLIB=${RANLIB}" >> "$GITHUB_ENV"
@@ -351,7 +351,69 @@ runs:
         echo "CC=$(command -v clang-${VER} 2>/dev/null || command -v clang)" >> "$GITHUB_ENV"
         echo "CXX=$(command -v clang++-${VER} 2>/dev/null || command -v clang++)" >> "$GITHUB_ENV"
 
-        echo "✅ Forced -fuse-ld=lld and LLVM ${VER} binutils for nested LTO builds"
+        echo "✅ Linux Clang: -fuse-ld=lld + LLVM binutils"
+
+    - name: Setup LLVM linker tools (Windows clang-cl)
+      if: runner.os == 'Windows' && inputs.toolchain == 'clang-cl'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        Write-Host "🔗 Setting up lld-link + llvm-lib/llvm-ar for clang-cl (IPO)..."
+
+        function Require-Cmd([string]$Name) {
+          $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+          if (-not $cmd) {
+            Write-Error "$Name not on PATH (install-toolchain should provide LLVM tools)"
+            exit 1
+          }
+          return $cmd.Source
+        }
+
+        $lld  = Require-Cmd "lld-link.exe"
+        $lib  = Require-Cmd "llvm-lib.exe"
+        $ar   = Require-Cmd "llvm-ar.exe"
+        $ranlib = $null
+        $rn = Get-Command "llvm-ranlib.exe" -ErrorAction SilentlyContinue
+        if ($rn) { $ranlib = $rn.Source }
+
+        # CMake-safe paths (forward slashes)
+        $lldC  = ($lld  -replace '\\', '/')
+        $libC  = ($lib  -replace '\\', '/')
+        $arC   = ($ar   -replace '\\', '/')
+
+        $binDir = Split-Path -Parent $lld
+        $binDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        $env:Path = "$binDir;$env:Path"
+
+        Write-Host "lld-link : $lldC"
+        Write-Host "llvm-lib : $libC"
+        Write-Host "llvm-ar  : $arC"
+        if ($ranlib) { Write-Host "llvm-ranlib: $($ranlib -replace '\\','/')" }
+
+        # Propagate for nested BuildMaster / subprocesses
+        @(
+          "CMAKE_LINKER=$lldC",
+          "CMAKE_C_COMPILER_LINKER=$lldC",
+          "CMAKE_CXX_COMPILER_LINKER=$lldC",
+          "CMAKE_AR=$libC",
+          "CMAKE_C_COMPILER_AR=$libC",
+          "CMAKE_CXX_COMPILER_AR=$libC",
+          "AR=$arC"
+        ) | ForEach-Object { $_ | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append }
+
+        if ($ranlib) {
+          $rnC = ($ranlib -replace '\\', '/')
+          @(
+            "CMAKE_RANLIB=$rnC",
+            "CMAKE_C_COMPILER_RANLIB=$rnC",
+            "CMAKE_CXX_COMPILER_RANLIB=$rnC",
+            "RANLIB=$rnC"
+          ) | ForEach-Object { $_ | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append }
+        }
+
+        & $lld --version 2>&1 | Select-Object -First 2
+        Write-Host "✅ Windows clang-cl: lld-link + llvm-lib (LTO/static OK)"
 
     ###########################################################################
     # 1c. RESTORE COMPILER CACHE
@@ -400,28 +462,23 @@ runs:
         echo "📁 Downloads directory ready: ${{ steps.buildmaster.outputs.downloads_dir }}"
 
     ###########################################################################
-    # 1e. WINDOWS: sanitize PATH — MSVC link.exe first (msvc + clang-cl)
+    # 1e. WINDOWS PATH: drop GNU shadows; MSVC link only when toolchain=msvc
     ###########################################################################
-    - name: Sanitize PATH for MSVC linker
+    - name: Sanitize Windows PATH
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
+        $toolchain = "${{ inputs.toolchain }}"
 
-        Write-Host "🧹 Sanitizing PATH for MSVC linker..."
+        Write-Host "🧹 Sanitizing Windows PATH (toolchain=$toolchain)..."
 
         function Remove-GnuShadowPaths([string]$pathValue) {
           $gnuPathFragments = @(
-            'Git\usr\bin',
-            'Git\mingw64\bin',
-            'Git\mingw32\bin',
-            'Strawberry\c\bin',
-            'Strawberry\c\x86_64-w64-mingw32',
-            'msys64\usr\bin',
-            'msys64\mingw64\bin',
-            'cygwin64\bin',
-            'mingw64\bin',
-            'mingw32\bin'
+            'Git\usr\bin', 'Git\mingw64\bin', 'Git\mingw32\bin',
+            'Strawberry\c\bin', 'Strawberry\c\x86_64-w64-mingw32',
+            'msys64\usr\bin', 'msys64\mingw64\bin', 'cygwin64\bin',
+            'mingw64\bin', 'mingw32\bin'
           )
           $parts = [System.Collections.Generic.List[string]]::new()
           foreach ($p in ($pathValue -split ';')) {
@@ -441,41 +498,39 @@ runs:
 
         $env:Path = Remove-GnuShadowPaths $env:Path
 
-        $linkCmd = Get-Command link.exe -ErrorAction SilentlyContinue
-        if ($null -eq $linkCmd) {
-          Write-Error "link.exe not found after PATH sanitize (msvc-dev-cmd missing?)"
-          exit 1
+        if ($toolchain -eq "msvc") {
+          $linkCmd = Get-Command link.exe -ErrorAction SilentlyContinue
+          if ($null -eq $linkCmd) {
+            Write-Error "link.exe not found (msvc-dev-cmd missing?)"
+            exit 1
+          }
+          if ($linkCmd.Source -notmatch '(?i)[\\/]MSVC[\\/]|HostX64|Hostx64|Visual Studio') {
+            Write-Error "link.exe does not look like MSVC: $($linkCmd.Source)"
+            exit 1
+          }
+          $linkDir = Split-Path -Parent $linkCmd.Source
+          $env:Path = "$linkDir;$env:Path"
+          $linkDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Host "MSVC link.exe first: $($linkCmd.Source)"
+        } else {
+          # clang-cl: keep lld-link / LLVM bin ahead (already on PATH from install)
+          $lld = Get-Command lld-link.exe -ErrorAction SilentlyContinue
+          if ($lld) {
+            $lldDir = Split-Path -Parent $lld.Source
+            $env:Path = "$lldDir;$env:Path"
+            $lldDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            Write-Host "lld-link first: $($lld.Source)"
+          }
         }
-
-        $linkDir = Split-Path -Parent $linkCmd.Source
-        $env:Path = "$linkDir;$env:Path"
-
-        $linkDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-        "PATH=$env:Path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
         if ($env:__VSCMD_PREINIT_PATH) {
           $cleanPreinit = Remove-GnuShadowPaths $env:__VSCMD_PREINIT_PATH
           $env:__VSCMD_PREINIT_PATH = $cleanPreinit
           "__VSCMD_PREINIT_PATH=$cleanPreinit" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Cleaned __VSCMD_PREINIT_PATH"
         }
 
-        Write-Host "Using linker: $($linkCmd.Source)"
-
-        if ($linkCmd.Source -notmatch '(?i)[\\/]MSVC[\\/]|HostX64|Hostx64|Visual Studio') {
-          Write-Error "link.exe does not look like MSVC: $($linkCmd.Source)"
-          exit 1
-        }
-
-        $bannerText = cmd /c "link.exe 2>&1" | Out-String
-        $LASTEXITCODE = 0
-
-        Write-Host "link.exe banner (first 300 chars):"
-        if ($bannerText.Length -gt 0) {
-          Write-Host $bannerText.Substring(0, [Math]::Min(300, $bannerText.Length))
-        }
-
-        Write-Host "✅ MSVC linker OK"
+        "PATH=$env:Path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        Write-Host "✅ PATH sanitized"
 
     ###########################################################################
     # 2. CONFIGURE
@@ -516,6 +571,9 @@ runs:
                 -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld
                 -DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld
               )
+              if [ -n "${CMAKE_AR:-}" ]; then
+                LINKER_ARGS+=("-DCMAKE_AR=${CMAKE_AR}")
+              fi
               echo "🔗 Using lld for toolchain=${{ inputs.toolchain }}"
               ;;
           esac
@@ -540,41 +598,19 @@ runs:
         CONFIGURE_OPTIONS: ${{ inputs.configure-options }}
       run: |
         $ErrorActionPreference = "Stop"
+        $toolchain = "${{ inputs.toolchain }}"
 
         Write-Host "────────────────────────────────────────────────────────"
         Write-Host "🔧 Configuring CMake (Windows)"
         Write-Host "   Build type : ${{ inputs.build-type }}"
         Write-Host "   Build dir  : ${{ inputs.build-dir }}"
-        Write-Host "   Toolchain  : ${{ inputs.toolchain }}"
+        Write-Host "   Toolchain  : $toolchain"
         Write-Host "────────────────────────────────────────────────────────"
 
         $cCompiler = "${{ steps.toolchain.outputs.c_compiler }}"
         $cxxCompiler = "${{ steps.toolchain.outputs.cxx_compiler }}"
         if ([string]::IsNullOrWhiteSpace($cCompiler))  { $cCompiler = "cl" }
         if ([string]::IsNullOrWhiteSpace($cxxCompiler)) { $cxxCompiler = "cl" }
-
-        # Always force MSVC link.exe (msvc and clang-cl).
-        # IPO stays MSVC-style (/GL + /LTCG); only the linker is pinned.
-        $linkCmd = Get-Command link.exe -ErrorAction SilentlyContinue
-        if ($null -eq $linkCmd) {
-          Write-Error "link.exe not found (msvc-dev-cmd / PATH sanitize required)"
-          exit 1
-        }
-        if ($linkCmd.Source -notmatch '(?i)[\\/]MSVC[\\/]|HostX64|Hostx64|Visual Studio') {
-          Write-Error "link.exe does not look like MSVC: $($linkCmd.Source)"
-          exit 1
-        }
-
-        # CMake paths must use forward slashes — backslashes become invalid escapes (\P, \M, …)
-        $linkExe = ($linkCmd.Source -replace '\\', '/')
-
-        $mtCmd = Get-Command mt.exe -ErrorAction SilentlyContinue
-        $mtExe = if ($mtCmd) { ($mtCmd.Source -replace '\\', '/') } else { "mt" }
-
-        Write-Host "   C compiler  : $cCompiler"
-        Write-Host "   CXX compiler: $cxxCompiler"
-        Write-Host "   Linker      : $linkExe (MSVC — forced for msvc and clang-cl)"
-        Write-Host "   mt          : $mtExe"
 
         $cmakeArgs = [System.Collections.Generic.List[string]]::new()
         foreach ($a in @(
@@ -583,14 +619,66 @@ runs:
           "-G", "Ninja",
           "-DCMAKE_BUILD_TYPE=${{ inputs.build-type }}",
           "-DCMAKE_C_COMPILER=$cCompiler",
-          "-DCMAKE_CXX_COMPILER=$cxxCompiler",
-          "-DCMAKE_LINKER_TYPE=MSVC",
-          "-DCMAKE_LINKER=$linkExe",
-          "-DCMAKE_C_COMPILER_LINKER=$linkExe",
-          "-DCMAKE_CXX_COMPILER_LINKER=$linkExe",
-          "-DCMAKE_MT=$mtExe"
+          "-DCMAKE_CXX_COMPILER=$cxxCompiler"
         )) {
           $cmakeArgs.Add($a)
+        }
+
+        $mtCmd = Get-Command mt.exe -ErrorAction SilentlyContinue
+        $mtExe = if ($mtCmd) { ($mtCmd.Source -replace '\\', '/') } else { "mt" }
+        $cmakeArgs.Add("-DCMAKE_MT=$mtExe")
+
+        if ($toolchain -eq "clang-cl") {
+          # LLVM IPO path: lld-link + llvm-lib (not MSVC link.exe)
+          $lldCmd = Get-Command lld-link.exe -ErrorAction SilentlyContinue
+          if (-not $lldCmd) {
+            Write-Error "lld-link.exe not found (required for clang-cl + IPO)"
+            exit 1
+          }
+          $lldExe = ($lldCmd.Source -replace '\\', '/')
+
+          $libCmd = Get-Command llvm-lib.exe -ErrorAction SilentlyContinue
+          if (-not $libCmd) {
+            Write-Error "llvm-lib.exe not found (required for static libs + LTO)"
+            exit 1
+          }
+          $libExe = ($libCmd.Source -replace '\\', '/')
+
+          Write-Host "   C compiler  : $cCompiler"
+          Write-Host "   CXX compiler: $cxxCompiler"
+          Write-Host "   Linker      : $lldExe (LLD — clang-cl IPO)"
+          Write-Host "   Archiver    : $libExe (llvm-lib)"
+          Write-Host "   mt          : $mtExe"
+
+          $cmakeArgs.Add("-DCMAKE_LINKER_TYPE=LLD")
+          $cmakeArgs.Add("-DCMAKE_LINKER=$lldExe")
+          $cmakeArgs.Add("-DCMAKE_C_COMPILER_LINKER=$lldExe")
+          $cmakeArgs.Add("-DCMAKE_CXX_COMPILER_LINKER=$lldExe")
+          $cmakeArgs.Add("-DCMAKE_AR=$libExe")
+          $cmakeArgs.Add("-DCMAKE_C_COMPILER_AR=$libExe")
+          $cmakeArgs.Add("-DCMAKE_CXX_COMPILER_AR=$libExe")
+        } else {
+          # Pure MSVC: link.exe + /GL/LTCG-style IPO from the project
+          $linkCmd = Get-Command link.exe -ErrorAction SilentlyContinue
+          if ($null -eq $linkCmd) {
+            Write-Error "link.exe not found (msvc-dev-cmd required)"
+            exit 1
+          }
+          if ($linkCmd.Source -notmatch '(?i)[\\/]MSVC[\\/]|HostX64|Hostx64|Visual Studio') {
+            Write-Error "link.exe does not look like MSVC: $($linkCmd.Source)"
+            exit 1
+          }
+          $linkExe = ($linkCmd.Source -replace '\\', '/')
+
+          Write-Host "   C compiler  : $cCompiler"
+          Write-Host "   CXX compiler: $cxxCompiler"
+          Write-Host "   Linker      : $linkExe (MSVC)"
+          Write-Host "   mt          : $mtExe"
+
+          $cmakeArgs.Add("-DCMAKE_LINKER_TYPE=MSVC")
+          $cmakeArgs.Add("-DCMAKE_LINKER=$linkExe")
+          $cmakeArgs.Add("-DCMAKE_C_COMPILER_LINKER=$linkExe")
+          $cmakeArgs.Add("-DCMAKE_CXX_COMPILER_LINKER=$linkExe")
         }
 
         if ("${{ inputs.msvc-embedded-debug }}" -eq "true") {
@@ -600,7 +688,7 @@ runs:
         }
 
         if ("${{ inputs.ccache-key }}" -ne "" -and (Get-Command sccache -ErrorAction SilentlyContinue)) {
-          Write-Host "📦 Using sccache launcher (msvc / clang-cl)"
+          Write-Host "📦 Using sccache launcher"
           $cmakeArgs.Add("-DCMAKE_C_COMPILER_LAUNCHER=sccache")
           $cmakeArgs.Add("-DCMAKE_CXX_COMPILER_LAUNCHER=sccache")
 
@@ -646,6 +734,7 @@ runs:
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
+        $toolchain = "${{ inputs.toolchain }}"
 
         Write-Host "────────────────────────────────────────────────────────"
         Write-Host "🏗️  Building with Ninja (Windows)"
@@ -671,13 +760,22 @@ runs:
         }
 
         $env:Path = Remove-GnuShadowPaths $env:Path
-        $linkCmd = Get-Command link.exe -ErrorAction SilentlyContinue
-        if ($null -eq $linkCmd) {
-          Write-Error "link.exe not found before build"
-          exit 1
+
+        if ($toolchain -eq "msvc") {
+          $linkCmd = Get-Command link.exe -ErrorAction SilentlyContinue
+          if ($null -eq $linkCmd) {
+            Write-Error "link.exe not found before build"
+            exit 1
+          }
+          $linkDir = Split-Path -Parent $linkCmd.Source
+          $env:Path = "$linkDir;$env:Path"
+        } else {
+          $lld = Get-Command lld-link.exe -ErrorAction SilentlyContinue
+          if ($lld) {
+            $env:Path = "$(Split-Path -Parent $lld.Source);$env:Path"
+          }
         }
-        $linkDir = Split-Path -Parent $linkCmd.Source
-        $env:Path = "$linkDir;$env:Path"
+
         if ($env:__VSCMD_PREINIT_PATH) {
           $env:__VSCMD_PREINIT_PATH = Remove-GnuShadowPaths $env:__VSCMD_PREINIT_PATH
         }
