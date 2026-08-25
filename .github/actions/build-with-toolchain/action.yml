@@ -67,7 +67,10 @@ inputs:
     default: "false"
 
   install-meson:
-    description: "Install/pin Meson 1.10.0 via pip"
+    description: >
+      Install Meson via pip (default: true).
+      Windows: pin meson==1.10.0 (workaround for known bugs).
+      Linux/macOS: install latest Meson from PyPI.
     required: false
     default: "true"
 
@@ -208,7 +211,7 @@ runs:
         fi
 
     ###########################################################################
-    # 1. INSTALL TOOLCHAIN (install-toolchain handles clang-cl installation)
+    # 1. INSTALL TOOLCHAIN
     ###########################################################################
     - name: Install toolchain
       id: toolchain
@@ -282,7 +285,7 @@ runs:
         fi
 
     ###########################################################################
-    # 1b. FORCE LLD + MATCHING LLVM BINUTILS (Clang on Linux) — fix LTO/x265
+    # 1b. FORCE LLD + MATCHING LLVM BINUTILS (Clang on Linux only)
     ###########################################################################
     - name: Force lld for Clang
       if: runner.os == 'Linux' && (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++')
@@ -397,7 +400,7 @@ runs:
         echo "📁 Downloads directory ready: ${{ steps.buildmaster.outputs.downloads_dir }}"
 
     ###########################################################################
-    # 1e. WINDOWS: sanitize PATH for MSVC linker (msvc + clang-cl)
+    # 1e. WINDOWS: sanitize PATH — MSVC link.exe first (msvc + clang-cl)
     ###########################################################################
     - name: Sanitize PATH for MSVC linker
       if: runner.os == 'Windows'
@@ -550,8 +553,28 @@ runs:
         if ([string]::IsNullOrWhiteSpace($cCompiler))  { $cCompiler = "cl" }
         if ([string]::IsNullOrWhiteSpace($cxxCompiler)) { $cxxCompiler = "cl" }
 
+        # Always force MSVC link.exe (msvc and clang-cl).
+        # IPO stays MSVC-style (/GL + /LTCG); only the linker is pinned.
+        $linkCmd = Get-Command link.exe -ErrorAction SilentlyContinue
+        if ($null -eq $linkCmd) {
+          Write-Error "link.exe not found (msvc-dev-cmd / PATH sanitize required)"
+          exit 1
+        }
+        if ($linkCmd.Source -notmatch '(?i)[\\/]MSVC[\\/]|HostX64|Hostx64|Visual Studio') {
+          Write-Error "link.exe does not look like MSVC: $($linkCmd.Source)"
+          exit 1
+        }
+
+        # CMake paths must use forward slashes — backslashes become invalid escapes (\P, \M, …)
+        $linkExe = ($linkCmd.Source -replace '\\', '/')
+
+        $mtCmd = Get-Command mt.exe -ErrorAction SilentlyContinue
+        $mtExe = if ($mtCmd) { ($mtCmd.Source -replace '\\', '/') } else { "mt" }
+
         Write-Host "   C compiler  : $cCompiler"
         Write-Host "   CXX compiler: $cxxCompiler"
+        Write-Host "   Linker      : $linkExe (MSVC — forced for msvc and clang-cl)"
+        Write-Host "   mt          : $mtExe"
 
         $cmakeArgs = [System.Collections.Generic.List[string]]::new()
         foreach ($a in @(
@@ -560,7 +583,12 @@ runs:
           "-G", "Ninja",
           "-DCMAKE_BUILD_TYPE=${{ inputs.build-type }}",
           "-DCMAKE_C_COMPILER=$cCompiler",
-          "-DCMAKE_CXX_COMPILER=$cxxCompiler"
+          "-DCMAKE_CXX_COMPILER=$cxxCompiler",
+          "-DCMAKE_LINKER_TYPE=MSVC",
+          "-DCMAKE_LINKER=$linkExe",
+          "-DCMAKE_C_COMPILER_LINKER=$linkExe",
+          "-DCMAKE_CXX_COMPILER_LINKER=$linkExe",
+          "-DCMAKE_MT=$mtExe"
         )) {
           $cmakeArgs.Add($a)
         }
