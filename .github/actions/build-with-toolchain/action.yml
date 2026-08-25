@@ -12,8 +12,17 @@ inputs:
 
   ccache-key:
     description: >
-      Non-empty enables compiler caching. Used as a version/namespace suffix
-      (e.g. "v1"). The real Actions key is per-OS + toolchain + this suffix.
+      Non-empty enables compiler caching. Namespace suffix (e.g. "v1" or
+      "v1-clang-extra-OFF"). Combined with OS, toolchain, job id and cache-scope.
+    required: false
+    default: ""
+
+  cache-scope:
+    description: >
+      Extra uniqueness per matrix cell / parallel job. Composite actions cannot
+      see matrix context; pass it from the workflow, e.g. cache-scope set to
+      matrix.extra or matrix.os-matrix.extra (from the caller workflow).
+      Empty is fine if ccache-key already differs per matrix cell.
     required: false
     default: ""
 
@@ -93,11 +102,23 @@ runs:
 
         OS="${{ runner.os }}"
         TOOL="${{ inputs.toolchain }}"
+        JOB="${{ github.job }}"
         SUFFIX="$(echo '${{ inputs.ccache-key }}' | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+        SCOPE="$(echo '${{ inputs.cache-scope }}' | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+
         if [ -z "$SUFFIX" ]; then
           echo "❌ ccache-key is empty after trim"
           exit 1
         fi
+
+        # Actions cache keys: keep [A-Za-z0-9._-]
+        sanitize() {
+          echo "$1" | sed 's/[^A-Za-z0-9._-]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//'
+        }
+        JOB_S="$(sanitize "$JOB")"
+        SCOPE_S="$(sanitize "$SCOPE")"
+        SUFFIX_S="$(sanitize "$SUFFIX")"
+        TOOL_S="$(sanitize "$TOOL")"
 
         if [ "$OS" = "Windows" ]; then
           PREFIX="sccache"
@@ -121,14 +142,30 @@ runs:
           echo "📁 CCACHE_DIR=${CCACHE_DIR}"
         fi
 
-        KEY="${PREFIX}-${OS}-${TOOL}-${SUFFIX}"
+        # One namespace per OS + toolchain + suffix + job (+ optional matrix scope)
+        KEY="${PREFIX}-${OS}-${TOOL_S}-${SUFFIX_S}-${JOB_S}"
+        if [ -n "$SCOPE_S" ]; then
+          KEY="${KEY}-${SCOPE_S}"
+        fi
+
+        # Immutable save key: unique per run and per re-run attempt
+        SAVE_KEY="${KEY}-${{ github.run_id }}-${{ github.run_attempt }}"
+
         echo "cache_key=${KEY}" >> "$GITHUB_OUTPUT"
+        echo "save_key=${SAVE_KEY}" >> "$GITHUB_OUTPUT"
         echo "CACHE_KEY=${KEY}" >> "$GITHUB_ENV"
         echo "✅ Compiler cache KEY=${KEY}"
+        echo "✅ Compiler cache SAVE_KEY=${SAVE_KEY}"
 
-        DL_KEY="buildmaster-downloads-${OS}-${TOOL}-${SUFFIX}"
+        DL_KEY="buildmaster-downloads-${OS}-${TOOL_S}-${SUFFIX_S}-${JOB_S}"
+        if [ -n "$SCOPE_S" ]; then
+          DL_KEY="${DL_KEY}-${SCOPE_S}"
+        fi
+        DL_SAVE_KEY="${DL_KEY}-${{ github.run_id }}-${{ github.run_attempt }}"
         echo "downloads_cache_key=${DL_KEY}" >> "$GITHUB_OUTPUT"
+        echo "downloads_save_key=${DL_SAVE_KEY}" >> "$GITHUB_OUTPUT"
         echo "✅ Downloads cache KEY=${DL_KEY}"
+        echo "✅ Downloads cache SAVE_KEY=${DL_SAVE_KEY}"
 
     ###########################################################################
     # 0b. DETECT STORMBYTE-BUILDMASTER
@@ -281,8 +318,9 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: ${{ env.CCACHE_DIR }}
-        key: ${{ steps.cachekeys.outputs.cache_key }}-${{ github.run_id }}
+        key: ${{ steps.cachekeys.outputs.save_key }}
         restore-keys: |
+          ${{ steps.cachekeys.outputs.cache_key }}-${{ github.run_id }}-
           ${{ steps.cachekeys.outputs.cache_key }}-
 
     - name: Restore sccache
@@ -291,8 +329,9 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: ${{ env.SCCACHE_DIR }}
-        key: ${{ steps.cachekeys.outputs.cache_key }}-${{ github.run_id }}
+        key: ${{ steps.cachekeys.outputs.save_key }}
         restore-keys: |
+          ${{ steps.cachekeys.outputs.cache_key }}-${{ github.run_id }}-
           ${{ steps.cachekeys.outputs.cache_key }}-
 
     ###########################################################################
@@ -304,8 +343,9 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: ${{ steps.buildmaster.outputs.downloads_dir }}
-        key: ${{ steps.cachekeys.outputs.downloads_cache_key }}-${{ github.run_id }}
+        key: ${{ steps.cachekeys.outputs.downloads_save_key }}
         restore-keys: |
+          ${{ steps.cachekeys.outputs.downloads_cache_key }}-${{ github.run_id }}-
           ${{ steps.cachekeys.outputs.downloads_cache_key }}-
 
     - name: Ensure downloads directory exists
@@ -672,7 +712,7 @@ runs:
         echo "✅ Tests finished"
 
     ###########################################################################
-    # 6. SAVE COMPILER CACHE
+    # 6. SAVE COMPILER CACHE (always: keep partial compile results)
     ###########################################################################
     - name: Save ccache
       if: always() && (runner.os == 'Linux' || runner.os == 'macOS') && inputs.ccache-key != ''
@@ -680,7 +720,7 @@ runs:
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CCACHE_DIR }}
-        key: ${{ steps.cachekeys.outputs.cache_key }}-${{ github.run_id }}
+        key: ${{ steps.cachekeys.outputs.save_key }}
 
     - name: Save sccache
       if: always() && runner.os == 'Windows' && inputs.ccache-key != ''
@@ -688,30 +728,30 @@ runs:
       uses: actions/cache/save@v4
       with:
         path: ${{ env.SCCACHE_DIR }}
-        key: ${{ steps.cachekeys.outputs.cache_key }}-${{ github.run_id }}
+        key: ${{ steps.cachekeys.outputs.save_key }}
 
     ###########################################################################
     # 7. SAVE DOWNLOADS CACHE
     ###########################################################################
     - name: Save downloads cache
-      if: success() && inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
+      if: always() && inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
       continue-on-error: true
       uses: actions/cache/save@v4
       with:
         path: ${{ steps.buildmaster.outputs.downloads_dir }}
-        key: ${{ steps.cachekeys.outputs.downloads_cache_key }}-${{ github.run_id }}
+        key: ${{ steps.cachekeys.outputs.downloads_save_key }}
 
     ###########################################################################
-    # 8. CLEANUP OLD CACHES (keep only the newest one)
+    # 8. CLEANUP OLD CACHES (keep only the entry just saved for this namespace)
     ###########################################################################
     - name: Cleanup old ccache entries
-      if: always() && (runner.os == 'Linux' || runner.os == 'macOS') && inputs.ccache-key != '' && steps.restore-ccache.outputs.cache-hit == 'true'
+      if: always() && (runner.os == 'Linux' || runner.os == 'macOS') && inputs.ccache-key != ''
       continue-on-error: true
       uses: actions/github-script@v7
       with:
         script: |
           const keyPrefix = `${{ steps.cachekeys.outputs.cache_key }}-`;
-          const currentKey = `${keyPrefix}${context.runId}`;
+          const currentKey = `${{ steps.cachekeys.outputs.save_key }}`;
           const caches = await github.paginate(
             github.rest.actions.getActionsCacheList,
             {
@@ -733,13 +773,13 @@ runs:
           }
 
     - name: Cleanup old sccache entries
-      if: always() && runner.os == 'Windows' && inputs.ccache-key != '' && steps.restore-sccache.outputs.cache-hit == 'true'
+      if: always() && runner.os == 'Windows' && inputs.ccache-key != ''
       continue-on-error: true
       uses: actions/github-script@v7
       with:
         script: |
           const keyPrefix = `${{ steps.cachekeys.outputs.cache_key }}-`;
-          const currentKey = `${keyPrefix}${context.runId}`;
+          const currentKey = `${{ steps.cachekeys.outputs.save_key }}`;
           const caches = await github.paginate(
             github.rest.actions.getActionsCacheList,
             {
@@ -761,13 +801,13 @@ runs:
           }
 
     - name: Cleanup old downloads cache entries
-      if: always() && inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true' && steps.restore-downloads.outputs.cache-hit == 'true'
+      if: always() && inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
       continue-on-error: true
       uses: actions/github-script@v7
       with:
         script: |
           const keyPrefix = `${{ steps.cachekeys.outputs.downloads_cache_key }}-`;
-          const currentKey = `${keyPrefix}${context.runId}`;
+          const currentKey = `${{ steps.cachekeys.outputs.downloads_save_key }}`;
           const caches = await github.paginate(
             github.rest.actions.getActionsCacheList,
             {
