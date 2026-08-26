@@ -26,6 +26,11 @@ inputs:
     required: false
     default: ""
 
+  source-dir:
+    description: "CMake source directory (-S)"
+    required: false
+    default: "."
+
   build-dir:
     description: "CMake build directory"
     required: false
@@ -572,6 +577,7 @@ runs:
 
         echo "────────────────────────────────────────────────────────"
         echo "🔧 Configuring CMake (Linux/macOS)"
+        echo "   Source dir : ${{ inputs.source-dir }}"
         echo "   Build type : ${{ inputs.build-type }}"
         echo "   Build dir  : ${{ inputs.build-dir }}"
         echo "   Toolchain  : ${{ inputs.toolchain }}"
@@ -607,7 +613,7 @@ runs:
         fi
 
         # shellcheck disable=SC2086
-        cmake -S . -B "${{ inputs.build-dir }}" \
+        cmake -S "${{ inputs.source-dir }}" -B "${{ inputs.build-dir }}" \
           -G Ninja \
           -DCMAKE_BUILD_TYPE="${{ inputs.build-type }}" \
           -DCMAKE_C_COMPILER="${{ steps.toolchain.outputs.c_compiler }}" \
@@ -629,6 +635,7 @@ runs:
 
         Write-Host "────────────────────────────────────────────────────────"
         Write-Host "🔧 Configuring CMake (Windows)"
+        Write-Host "   Source dir : ${{ inputs.source-dir }}"
         Write-Host "   Build type : ${{ inputs.build-type }}"
         Write-Host "   Build dir  : ${{ inputs.build-dir }}"
         Write-Host "   Toolchain  : $toolchain"
@@ -641,7 +648,7 @@ runs:
 
         $cmakeArgs = [System.Collections.Generic.List[string]]::new()
         foreach ($a in @(
-          "-S", ".",
+          "-S", "${{ inputs.source-dir }}",
           "-B", "${{ inputs.build-dir }}",
           "-G", "Ninja",
           "-DCMAKE_BUILD_TYPE=${{ inputs.build-type }}",
