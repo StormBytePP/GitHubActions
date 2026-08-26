@@ -285,7 +285,7 @@ runs:
         fi
 
     ###########################################################################
-    # 1b. LLVM LLD + binutils (clang family: Linux clang/clang-libc++, Win clang-cl)
+    # 1b. LLVM LLD + binutils (clang family)
     ###########################################################################
     - name: Setup LLVM linker tools (Linux clang / clang-libc++)
       if: runner.os == 'Linux' && (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++')
@@ -377,7 +377,6 @@ runs:
         $rn = Get-Command "llvm-ranlib.exe" -ErrorAction SilentlyContinue
         if ($rn) { $ranlib = $rn.Source }
 
-        # CMake-safe paths (forward slashes)
         $lldC  = ($lld  -replace '\\', '/')
         $libC  = ($lib  -replace '\\', '/')
         $arC   = ($ar   -replace '\\', '/')
@@ -391,7 +390,6 @@ runs:
         Write-Host "llvm-ar  : $arC"
         if ($ranlib) { Write-Host "llvm-ranlib: $($ranlib -replace '\\','/')" }
 
-        # Propagate for nested BuildMaster / subprocesses
         @(
           "CMAKE_LINKER=$lldC",
           "CMAKE_C_COMPILER_LINKER=$lldC",
@@ -462,7 +460,7 @@ runs:
         echo "📁 Downloads directory ready: ${{ steps.buildmaster.outputs.downloads_dir }}"
 
     ###########################################################################
-    # 1e. WINDOWS PATH: drop GNU shadows; MSVC link only when toolchain=msvc
+    # 1e. WINDOWS PATH: linker first; GNU/Git deferred to end (gzip/tar still work)
     ###########################################################################
     - name: Sanitize Windows PATH
       if: runner.os == 'Windows'
@@ -473,31 +471,49 @@ runs:
 
         Write-Host "🧹 Sanitizing Windows PATH (toolchain=$toolchain)..."
 
-        function Remove-GnuShadowPaths([string]$pathValue) {
-          $gnuPathFragments = @(
-            'Git\usr\bin', 'Git\mingw64\bin', 'Git\mingw32\bin',
-            'Strawberry\c\bin', 'Strawberry\c\x86_64-w64-mingw32',
-            'msys64\usr\bin', 'msys64\mingw64\bin', 'cygwin64\bin',
-            'mingw64\bin', 'mingw32\bin'
-          )
-          $parts = [System.Collections.Generic.List[string]]::new()
+        $gnuPathFragments = @(
+          'Git\usr\bin', 'Git\mingw64\bin', 'Git\mingw32\bin',
+          'Strawberry\c\bin', 'Strawberry\c\x86_64-w64-mingw32',
+          'msys64\usr\bin', 'msys64\mingw64\bin', 'cygwin64\bin',
+          'mingw64\bin', 'mingw32\bin'
+        )
+
+        function Split-PathList([string]$pathValue) {
+          $list = [System.Collections.Generic.List[string]]::new()
+          if ([string]::IsNullOrWhiteSpace($pathValue)) { return $list }
           foreach ($p in ($pathValue -split ';')) {
-            if ([string]::IsNullOrWhiteSpace($p)) { continue }
-            $drop = $false
-            foreach ($frag in $gnuPathFragments) {
-              if ($p -like "*$frag*") {
-                Write-Host "PATH: removing GNU shadow: $p"
-                $drop = $true
-                break
-              }
+            if (-not [string]::IsNullOrWhiteSpace($p)) {
+              $list.Add($p.Trim().TrimEnd('\'))
             }
-            if (-not $drop) { $parts.Add($p) }
           }
-          return ($parts -join ';')
+          return $list
         }
 
-        $env:Path = Remove-GnuShadowPaths $env:Path
+        function Test-GnuShadow([string]$p) {
+          foreach ($frag in $gnuPathFragments) {
+            if ($p -like "*$frag*") { return $true }
+          }
+          return $false
+        }
 
+        function Add-Unique([System.Collections.Generic.List[string]]$list, [string]$item) {
+          if ([string]::IsNullOrWhiteSpace($item)) { return }
+          if (-not ($list -contains $item)) { $list.Add($item) }
+        }
+
+        $kept = [System.Collections.Generic.List[string]]::new()
+        $deferred = [System.Collections.Generic.List[string]]::new()
+
+        foreach ($p in (Split-PathList $env:Path)) {
+          if (Test-GnuShadow $p) {
+            Write-Host "PATH: defer GNU shadow to end: $p"
+            Add-Unique $deferred $p
+          } else {
+            Add-Unique $kept $p
+          }
+        }
+
+        $prefix = [System.Collections.Generic.List[string]]::new()
         if ($toolchain -eq "msvc") {
           $linkCmd = Get-Command link.exe -ErrorAction SilentlyContinue
           if ($null -eq $linkCmd) {
@@ -508,29 +524,40 @@ runs:
             Write-Error "link.exe does not look like MSVC: $($linkCmd.Source)"
             exit 1
           }
-          $linkDir = Split-Path -Parent $linkCmd.Source
-          $env:Path = "$linkDir;$env:Path"
+          $linkDir = (Split-Path -Parent $linkCmd.Source).TrimEnd('\')
+          Add-Unique $prefix $linkDir
           $linkDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           Write-Host "MSVC link.exe first: $($linkCmd.Source)"
         } else {
-          # clang-cl: keep lld-link / LLVM bin ahead (already on PATH from install)
           $lld = Get-Command lld-link.exe -ErrorAction SilentlyContinue
           if ($lld) {
-            $lldDir = Split-Path -Parent $lld.Source
-            $env:Path = "$lldDir;$env:Path"
+            $lldDir = (Split-Path -Parent $lld.Source).TrimEnd('\')
+            Add-Unique $prefix $lldDir
             $lldDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
             Write-Host "lld-link first: $($lld.Source)"
           }
         }
 
+        $newParts = [System.Collections.Generic.List[string]]::new()
+        foreach ($p in $prefix)   { Add-Unique $newParts $p }
+        foreach ($p in $kept)     { Add-Unique $newParts $p }
+        foreach ($p in $deferred) { Add-Unique $newParts $p }
+
+        $env:Path = ($newParts -join ';')
+
         if ($env:__VSCMD_PREINIT_PATH) {
-          $cleanPreinit = Remove-GnuShadowPaths $env:__VSCMD_PREINIT_PATH
-          $env:__VSCMD_PREINIT_PATH = $cleanPreinit
-          "__VSCMD_PREINIT_PATH=$cleanPreinit" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $preKept = [System.Collections.Generic.List[string]]::new()
+          $preDef  = [System.Collections.Generic.List[string]]::new()
+          foreach ($p in (Split-PathList $env:__VSCMD_PREINIT_PATH)) {
+            if (Test-GnuShadow $p) { Add-Unique $preDef $p } else { Add-Unique $preKept $p }
+          }
+          $preNew = (@($preKept) + @($preDef)) -join ';'
+          $env:__VSCMD_PREINIT_PATH = $preNew
+          "__VSCMD_PREINIT_PATH=$preNew" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
         }
 
-        "PATH=$env:Path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-        Write-Host "✅ PATH sanitized"
+        "PATH=$($env:Path)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        Write-Host "✅ PATH sanitized (linker first; GNU/Git tools at end for gzip/tar/git)"
 
     ###########################################################################
     # 2. CONFIGURE
@@ -629,7 +656,6 @@ runs:
         $cmakeArgs.Add("-DCMAKE_MT=$mtExe")
 
         if ($toolchain -eq "clang-cl") {
-          # LLVM IPO path: lld-link + llvm-lib (not MSVC link.exe)
           $lldCmd = Get-Command lld-link.exe -ErrorAction SilentlyContinue
           if (-not $lldCmd) {
             Write-Error "lld-link.exe not found (required for clang-cl + IPO)"
@@ -658,7 +684,6 @@ runs:
           $cmakeArgs.Add("-DCMAKE_C_COMPILER_AR=$libExe")
           $cmakeArgs.Add("-DCMAKE_CXX_COMPILER_AR=$libExe")
         } else {
-          # Pure MSVC: link.exe + /GL/LTCG-style IPO from the project
           $linkCmd = Get-Command link.exe -ErrorAction SilentlyContinue
           if ($null -eq $linkCmd) {
             Write-Error "link.exe not found (msvc-dev-cmd required)"
@@ -740,44 +765,70 @@ runs:
         Write-Host "🏗️  Building with Ninja (Windows)"
         Write-Host "────────────────────────────────────────────────────────"
 
-        function Remove-GnuShadowPaths([string]$pathValue) {
-          $gnuPathFragments = @(
-            'Git\usr\bin', 'Git\mingw64\bin', 'Git\mingw32\bin',
-            'Strawberry\c\bin', 'Strawberry\c\x86_64-w64-mingw32',
-            'msys64\usr\bin', 'msys64\mingw64\bin', 'cygwin64\bin',
-            'mingw64\bin', 'mingw32\bin'
-          )
-          $parts = [System.Collections.Generic.List[string]]::new()
+        $gnuPathFragments = @(
+          'Git\usr\bin', 'Git\mingw64\bin', 'Git\mingw32\bin',
+          'Strawberry\c\bin', 'Strawberry\c\x86_64-w64-mingw32',
+          'msys64\usr\bin', 'msys64\mingw64\bin', 'cygwin64\bin',
+          'mingw64\bin', 'mingw32\bin'
+        )
+
+        function Split-PathList([string]$pathValue) {
+          $list = [System.Collections.Generic.List[string]]::new()
+          if ([string]::IsNullOrWhiteSpace($pathValue)) { return $list }
           foreach ($p in ($pathValue -split ';')) {
-            if ([string]::IsNullOrWhiteSpace($p)) { continue }
-            $drop = $false
-            foreach ($frag in $gnuPathFragments) {
-              if ($p -like "*$frag*") { $drop = $true; break }
+            if (-not [string]::IsNullOrWhiteSpace($p)) {
+              $list.Add($p.Trim().TrimEnd('\'))
             }
-            if (-not $drop) { $parts.Add($p) }
           }
-          return ($parts -join ';')
+          return $list
         }
 
-        $env:Path = Remove-GnuShadowPaths $env:Path
+        function Test-GnuShadow([string]$p) {
+          foreach ($frag in $gnuPathFragments) {
+            if ($p -like "*$frag*") { return $true }
+          }
+          return $false
+        }
 
+        function Add-Unique([System.Collections.Generic.List[string]]$list, [string]$item) {
+          if ([string]::IsNullOrWhiteSpace($item)) { return }
+          if (-not ($list -contains $item)) { $list.Add($item) }
+        }
+
+        $kept = [System.Collections.Generic.List[string]]::new()
+        $deferred = [System.Collections.Generic.List[string]]::new()
+        foreach ($p in (Split-PathList $env:Path)) {
+          if (Test-GnuShadow $p) { Add-Unique $deferred $p } else { Add-Unique $kept $p }
+        }
+
+        $prefix = [System.Collections.Generic.List[string]]::new()
         if ($toolchain -eq "msvc") {
           $linkCmd = Get-Command link.exe -ErrorAction SilentlyContinue
           if ($null -eq $linkCmd) {
             Write-Error "link.exe not found before build"
             exit 1
           }
-          $linkDir = Split-Path -Parent $linkCmd.Source
-          $env:Path = "$linkDir;$env:Path"
+          Add-Unique $prefix ((Split-Path -Parent $linkCmd.Source).TrimEnd('\'))
         } else {
           $lld = Get-Command lld-link.exe -ErrorAction SilentlyContinue
           if ($lld) {
-            $env:Path = "$(Split-Path -Parent $lld.Source);$env:Path"
+            Add-Unique $prefix ((Split-Path -Parent $lld.Source).TrimEnd('\'))
           }
         }
 
+        $newParts = [System.Collections.Generic.List[string]]::new()
+        foreach ($p in $prefix)   { Add-Unique $newParts $p }
+        foreach ($p in $kept)     { Add-Unique $newParts $p }
+        foreach ($p in $deferred) { Add-Unique $newParts $p }
+        $env:Path = ($newParts -join ';')
+
         if ($env:__VSCMD_PREINIT_PATH) {
-          $env:__VSCMD_PREINIT_PATH = Remove-GnuShadowPaths $env:__VSCMD_PREINIT_PATH
+          $preKept = [System.Collections.Generic.List[string]]::new()
+          $preDef  = [System.Collections.Generic.List[string]]::new()
+          foreach ($p in (Split-PathList $env:__VSCMD_PREINIT_PATH)) {
+            if (Test-GnuShadow $p) { Add-Unique $preDef $p } else { Add-Unique $preKept $p }
+          }
+          $env:__VSCMD_PREINIT_PATH = (@($preKept) + @($preDef)) -join ';'
         }
 
         $jobs = [Environment]::ProcessorCount
