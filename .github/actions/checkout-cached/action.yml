@@ -57,9 +57,28 @@ inputs:
     required: false
     default: "20"
 
+  enable-symlinks:
+    description: >
+      Set core.symlinks=true before checkout so gitlink mode 120000 is a real
+      symlink on Windows (needed for in-tree relative links). Default true.
+      Set false only on filesystems that cannot create symlinks.
+    required: false
+    default: "true"
+
 runs:
   using: "composite"
   steps:
+
+    ###########################################################################
+    # 0. SYMLINKS (must run before actions/checkout writes the worktree)
+    ###########################################################################
+    - name: Enable Git symlinks
+      if: inputs.enable-symlinks == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        git config --global core.symlinks true
+        echo "core.symlinks=$(git config --global --get core.symlinks)"
 
     ###########################################################################
     # 1. CHECKOUT PARENT (never fetch submodules here)
@@ -102,8 +121,6 @@ runs:
 
         echo "has_submodules=true" >> "$GITHUB_OUTPUT"
 
-        # Identity: gitlinks + .gitmodules only (not parent HEAD).
-        # OS is part of the key for UI clarity; Actions also scopes caches by OS.
         LINKS="$(git ls-tree -r HEAD | awk '$2 == "commit" { print $3 " " $4 }' | sort)"
         MOD="$(git show HEAD:.gitmodules 2>/dev/null || true)"
 
@@ -115,9 +132,7 @@ runs:
 
         PREFIX="${{ inputs.cache-key-prefix }}"
         OS="${{ runner.os }}"
-        # e.g. git-submodules-Linux-ce4faed4b522470c286b7494
         CACHE_KEY="${PREFIX}-${OS}-${HASH}"
-        # Prune only this OS so we do not delete Windows/mac caches from Linux jobs
         PRUNE_PREFIX="${PREFIX}-${OS}-"
 
         echo "cache_key=${CACHE_KEY}" >> "$GITHUB_OUTPUT"
@@ -205,8 +220,6 @@ runs:
           echo "────────────────────────────────────────────────────────"
 
           set +e
-          # --progress da feedback continuo de objetos/clones
-          # No capturamos la salida completa → se ve en tiempo real
           # shellcheck disable=SC2086
           git submodule update --init $RECURSIVE_FLAG --force --jobs 1 --progress 2>&1 | tee /tmp/submodule-update.log
           rc=${PIPESTATUS[0]}
