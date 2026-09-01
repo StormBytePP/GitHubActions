@@ -81,9 +81,9 @@ inputs:
 
   msvc-embedded-debug:
     description: >
-      Windows only. If true (default), pass CMP0141=NEW and
-      CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded (/Z7).
-      Applies to msvc and clang-cl.
+      Deprecated no-op. Kept so existing workflows do not break.
+      Windows debug info is derived from build-type: Debug/RelWithDebInfo
+      get /Zi + /FS; Release/MinSizeRel get no /Z* flags.
     required: false
     default: "true"
 
@@ -256,11 +256,7 @@ runs:
           echo "CMAKE_CXX_COMPILER_LAUNCHER=sccache" >> "$GITHUB_ENV"
 
           if command -v sccache >/dev/null 2>&1; then
-            sccache --stop-server 2>/dev/null || true
-            sccache --start-server 2>/dev/null || true
-            sccache --zero-stats 2>/dev/null || true
-            echo "✅ sccache ready (dir=${SCCACHE_DIR})"
-            sccache --show-stats || true
+            echo "✅ sccache on PATH (server starts after cache restore, dir=${SCCACHE_DIR})"
           else
             echo "⚠️  WARNING: sccache not on PATH after install-toolchain"
           fi
@@ -419,7 +415,7 @@ runs:
         Write-Host "✅ Windows clang-cl: lld-link + llvm-lib (LTO/static OK)"
 
     ###########################################################################
-    # 1c. RESTORE COMPILER CACHE
+    # 1c. RESTORE COMPILER CACHE  (then start sccache — not before)
     ###########################################################################
     - name: Restore ccache
       id: restore-ccache
@@ -442,6 +438,26 @@ runs:
         restore-keys: |
           ${{ steps.cachekeys.outputs.cache_key }}-${{ github.run_id }}-
           ${{ steps.cachekeys.outputs.cache_key }}-
+
+    - name: Start sccache server
+      if: inputs.ccache-key != '' && runner.os == 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -z "${SCCACHE_DIR:-}" ]; then
+          SCCACHE_DIR="${RUNNER_TEMP}/sccache"
+          echo "SCCACHE_DIR=${SCCACHE_DIR}" >> "$GITHUB_ENV"
+        fi
+        mkdir -p "$SCCACHE_DIR"
+        if ! command -v sccache >/dev/null 2>&1; then
+          echo "⚠️  sccache not on PATH; skip server"
+          exit 0
+        fi
+        sccache --stop-server 2>/dev/null || true
+        sccache --start-server
+        sccache --zero-stats 2>/dev/null || true
+        echo "✅ sccache server after restore (dir=${SCCACHE_DIR})"
+        sccache --show-stats || true
 
     ###########################################################################
     # 1d. RESTORE + PREPARE DOWNLOADS CACHE
@@ -665,22 +681,16 @@ runs:
         if ($toolchain -eq "clang-cl") {
           $lldCmd = Get-Command lld-link.exe -ErrorAction SilentlyContinue
           if (-not $lldCmd) {
-            Write-Error "lld-link.exe not found (required for clang-cl + IPO)"
+            Write-Error "lld-link.exe not found"
             exit 1
           }
           $lldExe = ($lldCmd.Source -replace '\\', '/')
-
           $libCmd = Get-Command llvm-lib.exe -ErrorAction SilentlyContinue
-          if (-not $libCmd) {
-            Write-Error "llvm-lib.exe not found (required for static libs + LTO)"
-            exit 1
-          }
-          $libExe = ($libCmd.Source -replace '\\', '/')
+          $libExe = if ($libCmd) { ($libCmd.Source -replace '\\', '/') } else { "llvm-lib" }
 
           Write-Host "   C compiler  : $cCompiler"
           Write-Host "   CXX compiler: $cxxCompiler"
-          Write-Host "   Linker      : $lldExe (LLD — clang-cl IPO)"
-          Write-Host "   Archiver    : $libExe (llvm-lib)"
+          Write-Host "   Linker      : $lldExe (LLD)"
           Write-Host "   mt          : $mtExe"
 
           $cmakeArgs.Add("-DCMAKE_LINKER_TYPE=LLD")
@@ -713,14 +723,19 @@ runs:
           $cmakeArgs.Add("-DCMAKE_CXX_COMPILER_LINKER=$linkExe")
         }
 
-        if ("${{ inputs.msvc-embedded-debug }}" -eq "true") {
-          Write-Host "🛠️  msvc-embedded-debug: CMP0141=NEW + Embedded (/Z7)"
+        $bt = "${{ inputs.build-type }}".ToLowerInvariant()
+        if ($bt -eq "debug" -or $bt -eq "relwithdebinfo") {
+          Write-Host "Debug ${bt}: ProgramDatabase (/Zi) + /FS (no /Z7)"
           $cmakeArgs.Add("-DCMAKE_POLICY_DEFAULT_CMP0141=NEW")
-          $cmakeArgs.Add("-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded")
+          $cmakeArgs.Add("-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=ProgramDatabase")
+          $cmakeArgs.Add("-DCMAKE_C_FLAGS_INIT=/FS")
+          $cmakeArgs.Add("-DCMAKE_CXX_FLAGS_INIT=/FS")
+        } else {
+          Write-Host "Release ${bt}: no /Z* and no /FS"
         }
 
         if ("${{ inputs.ccache-key }}" -ne "" -and (Get-Command sccache -ErrorAction SilentlyContinue)) {
-          Write-Host "📦 Using sccache launcher"
+          Write-Host "Using sccache launcher"
           $cmakeArgs.Add("-DCMAKE_C_COMPILER_LAUNCHER=sccache")
           $cmakeArgs.Add("-DCMAKE_CXX_COMPILER_LAUNCHER=sccache")
 
@@ -735,7 +750,7 @@ runs:
           "SCCACHE_DIR=$($env:SCCACHE_DIR)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "SCCACHE_DIR=$($env:SCCACHE_DIR)"
         } else {
-          Write-Host "ℹ️  sccache launcher disabled"
+          Write-Host "sccache launcher disabled"
         }
 
         $extra = $env:CONFIGURE_OPTIONS
@@ -756,7 +771,7 @@ runs:
         & cmake @($cmakeArgs.ToArray())
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-        Write-Host "✅ CMake configure finished"
+        Write-Host "CMake configure finished"
 
     ###########################################################################
     # 3. BUILD
@@ -941,6 +956,20 @@ runs:
         ctest --test-dir "${{ inputs.build-dir }}" ${CTEST_OPTIONS}
 
         echo "✅ Tests finished"
+
+    ###########################################################################
+    # 5b. STOP SCCACHE BEFORE SAVE
+    ###########################################################################
+    - name: Stop sccache server
+      if: always() && runner.os == 'Windows' && inputs.ccache-key != ''
+      shell: bash
+      run: |
+        set +e
+        if command -v sccache >/dev/null 2>&1; then
+          sccache --show-stats
+          sccache --stop-server
+        fi
+        echo "✅ sccache server stopped (dir ready for cache/save)"
 
     ###########################################################################
     # 6. SAVE COMPILER CACHE
