@@ -1,8 +1,8 @@
 name: "Update APT lists (cached)"
 description: >
-  Linux only. Refresh and cache APT package indexes (no package install).
-  If cache-key is empty, this is a no-op (bypass: callers update on their own).
-  With a non-empty cache-key, restores/saves lists for other jobs (e.g. install-cached).
+  Linux only. Restore cached APT indexes, then decide whether to refresh
+  them from the mirrors under a hard timeout. Cache is a fallback when
+  mirrors hang; it is not a weekly freeze of Packages.
 author: "David C. Manuelda"
 branding:
   icon: "database"
@@ -11,149 +11,227 @@ branding:
 inputs:
   cache-key:
     description: >
-      Base cache key (e.g. apt-lists). Empty disables caching entirely (no-op).
-      When rotate-weekly=true, UTC ISO week (YYYY-Www) is appended.
+      Cache key prefix (e.g. apt-lists). Empty disables caching (no-op).
+      OS and a short InRelease hash are appended. One logical family per OS.
     required: false
     default: "apt-lists"
 
-  rotate-weekly:
-    description: "If true, append UTC ISO week (YYYY-Www) to the cache key."
+  acquire-timeout:
+    description: "Seconds per HTTP(S) attempt against Ubuntu mirrors."
     required: false
-    default: "true"
+    default: "20"
+
+  acquire-retries:
+    description: "Retries per mirror request (apt + InRelease probe)."
+    required: false
+    default: "2"
 
 runs:
   using: "composite"
   steps:
 
-    ###########################################################################
-    # 0. SKIP ON NON-LINUX
-    ###########################################################################
     - name: Skip on non-Linux
       if: runner.os != 'Linux'
       shell: bash
       run: |
-        echo "ℹ️  update-apt-cached is a no-op on ${{ runner.os }}"
+        echo "update-apt-cached: no-op on ${{ runner.os }}"
 
-    ###########################################################################
-    # 1. RESOLVE CACHE KEY + DIRECTORY
-    ###########################################################################
-    - name: Resolve cache key and directory
+    - name: Resolve cache prefix
       if: runner.os == 'Linux'
       id: meta
       shell: bash
       run: |
         set -euo pipefail
-
-        echo "────────────────────────────────────────────────────────"
-        echo "🔑 Resolving APT lists cache key & directory"
-        echo "────────────────────────────────────────────────────────"
-
         BASE="$(echo "${{ inputs.cache-key }}" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
-
         if [ -z "$BASE" ]; then
           echo "enabled=false" >> "$GITHUB_OUTPUT"
-          echo "ℹ️  cache-key is empty – bypass (no lists cache; other jobs update on their own)"
+          echo "cache-key empty — bypass"
+          exit 0
+        fi
+        PREFIX="${BASE}-${{ runner.os }}"
+        LISTS_ROOT="$HOME/apt-cache/${PREFIX}"
+        mkdir -p "$LISTS_ROOT"
+        echo "enabled=true" >> "$GITHUB_OUTPUT"
+        echo "prefix=${PREFIX}" >> "$GITHUB_OUTPUT"
+        echo "lists_root=${LISTS_ROOT}" >> "$GITHUB_OUTPUT"
+        echo "prefix=${PREFIX}"
+
+    - name: Probe InRelease
+      if: runner.os == 'Linux' && steps.meta.outputs.enabled == 'true'
+      id: probe
+      shell: bash
+      run: |
+        set -euo pipefail
+        TIMEOUT="${{ inputs.acquire-timeout }}"
+        RETRIES="${{ inputs.acquire-retries }}"
+        case "$TIMEOUT" in ''|*[!0-9]*) TIMEOUT=20 ;; esac
+        case "$RETRIES" in ''|*[!0-9]*) RETRIES=2 ;; esac
+        [ "$TIMEOUT" -lt 5 ] && TIMEOUT=5
+        [ "$RETRIES" -lt 0 ] && RETRIES=0
+
+        . /etc/os-release
+        CODE="${VERSION_CODENAME:-}"
+        if [ -z "$CODE" ]; then
+          echo "reachable=false" >> "$GITHUB_OUTPUT"
+          echo "hash=none" >> "$GITHUB_OUTPUT"
+          echo "InRelease: no VERSION_CODENAME — cannot probe"
           exit 0
         fi
 
-        if [ "${{ inputs.rotate-weekly }}" = "true" ]; then
-          WEEK="$(date -u +%G-W%V)"
-          KEY="${BASE}-${WEEK}"
-          echo "📅 Weekly rotation enabled → appending ${WEEK}"
-        else
-          KEY="${BASE}"
-          echo "📅 Weekly rotation disabled"
+        ARCHIVE="http://archive.ubuntu.com/ubuntu"
+        SECURITY="http://security.ubuntu.com/ubuntu"
+        URLS=(
+          "${ARCHIVE}/dists/${CODE}/InRelease"
+          "${ARCHIVE}/dists/${CODE}-updates/InRelease"
+          "${ARCHIVE}/dists/${CODE}-backports/InRelease"
+          "${SECURITY}/dists/${CODE}-security/InRelease"
+        )
+
+        TMP="$(mktemp -d)"
+        trap 'rm -rf "$TMP"' EXIT
+        ok=1
+        echo "Probing InRelease (timeout=${TIMEOUT}s retries=${RETRIES}) codename=${CODE}"
+        for url in "${URLS[@]}"; do
+          name="$(echo "$url" | sed 's#https\?://##;s#[^A-Za-z0-9._-]#_#g')"
+          echo "  GET ${url}"
+          if ! curl -fsSL --max-time "$TIMEOUT" --retry "$RETRIES" --retry-all-errors \
+               -o "${TMP}/${name}" "$url"; then
+            echo "  failed: ${url}"
+            ok=0
+            break
+          fi
+        done
+
+        if [ "$ok" -ne 1 ]; then
+          echo "reachable=false" >> "$GITHUB_OUTPUT"
+          echo "hash=none" >> "$GITHUB_OUTPUT"
+          echo "InRelease: unreachable or timed out — will not wait on mirrors"
+          exit 0
         fi
 
-        LISTS_DIR="$HOME/apt-cache/${KEY}/lists"
-        mkdir -p "$LISTS_DIR"
+        if command -v sha256sum >/dev/null 2>&1; then
+          HASH="$(cat "${TMP}"/* | sha256sum | awk '{print substr($1,1,16)}')"
+        else
+          HASH="$(cat "${TMP}"/* | shasum -a 256 | awk '{print substr($1,1,16)}')"
+        fi
+        echo "reachable=true" >> "$GITHUB_OUTPUT"
+        echo "hash=${HASH}" >> "$GITHUB_OUTPUT"
+        echo "InRelease hash=${HASH}"
 
-        echo "enabled=true" >> "$GITHUB_OUTPUT"
-        echo "lists_key=${KEY}" >> "$GITHUB_OUTPUT"
-        echo "lists_dir=${LISTS_DIR}" >> "$GITHUB_OUTPUT"
-
-        echo "LISTS_KEY=${KEY}" >> "$GITHUB_ENV"
-        echo "LISTS_DIR=${LISTS_DIR}" >> "$GITHUB_ENV"
-
-        echo "✅ APT lists cache KEY=${KEY}"
-        echo "📁 APT lists cache DIR=${LISTS_DIR}"
-
-    ###########################################################################
-    # 2. RESTORE APT LISTS CACHE
-    ###########################################################################
     - name: Restore APT lists cache
       if: runner.os == 'Linux' && steps.meta.outputs.enabled == 'true'
       id: restore
       uses: actions/cache/restore@v6
       with:
-        path: ${{ steps.meta.outputs.lists_dir }}
-        key: ${{ steps.meta.outputs.lists_key }}
+        path: ${{ steps.meta.outputs.lists_root }}
+        key: ${{ steps.meta.outputs.prefix }}-${{ steps.probe.outputs.hash }}
+        restore-keys: |
+          ${{ steps.meta.outputs.prefix }}-
 
-    ###########################################################################
-    # 3. SEED OR UPDATE APT LISTS
-    ###########################################################################
     - name: Seed or update APT lists
       if: runner.os == 'Linux' && steps.meta.outputs.enabled == 'true'
+      id: lists
       shell: bash
       run: |
         set -euo pipefail
+        LISTS_ROOT="${{ steps.meta.outputs.lists_root }}"
+        HASH="${{ steps.probe.outputs.hash }}"
+        REACHABLE="${{ steps.probe.outputs.reachable }}"
+        HIT="${{ steps.restore.outputs.cache-hit }}"
+        TIMEOUT="${{ inputs.acquire-timeout }}"
+        RETRIES="${{ inputs.acquire-retries }}"
+        case "$TIMEOUT" in ''|*[!0-9]*) TIMEOUT=20 ;; esac
+        case "$RETRIES" in ''|*[!0-9]*) RETRIES=2 ;; esac
 
-        echo "────────────────────────────────────────────────────────"
-        echo "📦 Seeding / updating APT package lists"
-        echo "────────────────────────────────────────────────────────"
-
-        LISTS_DIR="${{ steps.meta.outputs.lists_dir }}"
-
+        LISTS_DIR="${LISTS_ROOT}/lists"
+        mkdir -p "$LISTS_DIR"
         sudo mkdir -p /var/lib/apt/lists/partial
 
+        seed_lists() {
+          if compgen -G "${LISTS_DIR}/*" >/dev/null; then
+            sudo find "$LISTS_DIR" -maxdepth 1 -type f -exec cp --update=none {} /var/lib/apt/lists/ \;
+            if sudo find /var/lib/apt/lists -maxdepth 1 -type f -name '*_Packages' | grep -q .; then
+              return 0
+            fi
+          fi
+          return 1
+        }
+
+        run_update() {
+          sudo apt-get update -qq \
+            -o Acquire::Retries="$RETRIES" \
+            -o Acquire::http::Timeout="$TIMEOUT" \
+            -o Acquire::https::Timeout="$TIMEOUT"
+        }
+
+        save_lists() {
+          mkdir -p "$LISTS_DIR"
+          sudo find /var/lib/apt/lists -maxdepth 1 -type f -exec cp -f {} "$LISTS_DIR/" \;
+          sudo chown -R "$(id -u):$(id -g)" "$LISTS_ROOT" || true
+        }
+
         SEEDED=0
-        if compgen -G "${LISTS_DIR}/*" > /dev/null; then
-          echo "🔄 Seeding /var/lib/apt/lists from ${LISTS_DIR}..."
-          sudo find "${LISTS_DIR}" -maxdepth 1 -type f -exec cp --update=none {} /var/lib/apt/lists/ \;
+        if seed_lists; then
           SEEDED=1
-          echo "✅ Seed completed"
+          echo "Seeded /var/lib/apt/lists from cache"
         else
-          echo "ℹ️  No previous lists found in cache"
+          echo "No usable cached Packages"
         fi
 
-        NEED_UPDATE=1
-        if [ "$SEEDED" = "1" ]; then
-          if sudo find /var/lib/apt/lists -maxdepth 1 -type f -name '*_Packages' | grep -q .; then
-            NEED_UPDATE=0
-            echo "✅ Restored lists look usable → skipping apt-get update"
+        CASE=""
+        UPDATED=0
+
+        if [ "$REACHABLE" = "true" ] && [ "$HIT" = "true" ] && [ "$SEEDED" = "1" ]; then
+          CASE="unchanged"
+          echo "Indexes unchanged (hash=${HASH}) — using cached lists"
+        elif [ "$REACHABLE" = "true" ]; then
+          CASE="refresh"
+          if [ "$HIT" = "true" ]; then
+            echo "Indexes changed or incomplete cache — apt-get update (timeout=${TIMEOUT}s)"
           else
-            echo "⚠️  Restored lists incomplete → will run apt-get update"
+            echo "No exact cache for hash=${HASH} — apt-get update (timeout=${TIMEOUT}s)"
+          fi
+          if run_update; then
+            save_lists
+            UPDATED=1
+            echo "apt-get update finished — lists saved"
+          elif [ "$SEEDED" = "1" ]; then
+            echo "apt-get update failed — keeping seeded cache"
+          else
+            echo "apt-get update failed and no cache"
+            exit 1
+          fi
+        else
+          CASE="mirror-down"
+          if [ "$SEEDED" = "1" ]; then
+            echo "Mirrors unreachable — using cached lists (may be stale)"
+          else
+            echo "Mirrors unreachable and no cache — last attempt at apt-get update"
+            if run_update; then
+              save_lists
+              UPDATED=1
+              echo "apt-get update finished — lists saved"
+            else
+              echo "apt-get update failed"
+              exit 1
+            fi
           fi
         fi
 
-        if [ "$NEED_UPDATE" = "1" ]; then
-          echo "🔄 Running apt-get update..."
-          sudo apt-get update -qq
-          echo "✅ apt-get update finished"
-
-          echo "💾 Saving lists into ${LISTS_DIR}..."
-          mkdir -p "${LISTS_DIR}"
-          sudo find /var/lib/apt/lists -maxdepth 1 -type f -exec cp --update=none {} "${LISTS_DIR}/" \;
-          sudo chown -R "$(id -u):$(id -g)" "${LISTS_DIR}" || true
-          echo "lists_updated=true" >> "$GITHUB_ENV"
-          echo "✅ Lists saved to cache directory"
-        else
-          echo "lists_updated=false" >> "$GITHUB_ENV"
-        fi
-
+        echo "case=${CASE}" >> "$GITHUB_OUTPUT"
+        echo "lists_updated=${UPDATED}" >> "$GITHUB_ENV"
         echo "APT_LISTS_FRESH=1" >> "$GITHUB_ENV"
-        echo "✅ APT lists ready (APT_LISTS_FRESH=1)"
+        echo "Ready (case=${CASE} updated=${UPDATED} hash=${HASH})"
 
-    ###########################################################################
-    # 4. SAVE APT LISTS CACHE
-    ###########################################################################
     - name: Save APT lists cache
       if: >-
         runner.os == 'Linux'
         && steps.meta.outputs.enabled == 'true'
+        && env.lists_updated == '1'
+        && steps.probe.outputs.reachable == 'true'
+        && steps.probe.outputs.hash != 'none'
         && steps.restore.outputs.cache-hit != 'true'
-        && env.lists_updated == 'true'
       uses: actions/cache/save@v6
       with:
-        path: ${{ steps.meta.outputs.lists_dir }}
-        key: ${{ steps.meta.outputs.lists_key }}
+        path: ${{ steps.meta.outputs.lists_root }}
+        key: ${{ steps.meta.outputs.prefix }}-${{ steps.probe.outputs.hash }}
