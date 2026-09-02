@@ -27,7 +27,7 @@ inputs:
     default: "true"
 
   cache-key-prefix:
-    description: "Prefix for the submodule cache key (OS and gitlink hash are appended)"
+    description: "Prefix for the submodule cache key (OS is appended automatically)"
     required: false
     default: "git-submodules"
 
@@ -69,19 +69,14 @@ runs:
   using: "composite"
   steps:
 
-    ###########################################################################
-    # 0. SYMLINKS (must run before actions/checkout writes the worktree)
-    ###########################################################################
     - name: Enable Git symlinks
       if: inputs.enable-symlinks == 'true'
       shell: bash
       run: |
         set -euo pipefail
         git config --global core.symlinks true
+        echo "core.symlinks=$(git config --global --get core.symlinks)"
 
-    ###########################################################################
-    # 1. CHECKOUT PARENT (never fetch submodules here)
-    ###########################################################################
     - name: Checkout repository
       uses: actions/checkout@v7
       with:
@@ -91,9 +86,6 @@ runs:
         persist-credentials: ${{ inputs.persist-credentials }}
         path: ${{ inputs.path }}
 
-    ###########################################################################
-    # 2. RESOLVE SUBMODULE PATHS + CACHE KEY
-    ###########################################################################
     - name: Resolve submodule cache metadata
       if: inputs.submodules != 'false'
       id: meta
@@ -104,13 +96,16 @@ runs:
 
         if [ ! -f .gitmodules ]; then
           echo "has_submodules=false" >> "$GITHUB_OUTPUT"
+          echo "No .gitmodules found – skipping submodule cache"
           exit 0
         fi
 
         PATHS=()
-        while IFS= read -r p; do
+        while IFS= read -r key; do
+          [ -z "$key" ] && continue
+          p="$(git config --file .gitmodules --get "$key")"
           [ -n "$p" ] && PATHS+=("$p")
-        done < <(git config --file .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null | awk '{print $2}')
+        done < <(git config --file .gitmodules --name-only --get-regexp '^submodule\..*\.path$' 2>/dev/null)
 
         if [ ${#PATHS[@]} -eq 0 ]; then
           echo "has_submodules=false" >> "$GITHUB_OUTPUT"
@@ -135,6 +130,8 @@ runs:
 
         echo "cache_key=${CACHE_KEY}" >> "$GITHUB_OUTPUT"
         echo "prune_prefix=${PRUNE_PREFIX}" >> "$GITHUB_OUTPUT"
+        echo "cache_key=${CACHE_KEY}"
+        echo "Submodule cache identity (gitlinks + .gitmodules), OS=${OS}"
 
         {
           echo "cache_paths<<EOF"
@@ -143,9 +140,6 @@ runs:
           echo "EOF"
         } >> "$GITHUB_OUTPUT"
 
-    ###########################################################################
-    # 3. RESTORE SUBMODULE CACHE
-    ###########################################################################
     - name: Restore submodule cache
       if: inputs.submodules != 'false' && steps.meta.outputs.has_submodules == 'true'
       id: cache
@@ -154,9 +148,6 @@ runs:
         path: ${{ steps.meta.outputs.cache_paths }}
         key: ${{ steps.meta.outputs.cache_key }}
 
-    ###########################################################################
-    # 4. FETCH / SYNC SUBMODULES (direct names only in the log)
-    ###########################################################################
     - name: Update submodules
       if: inputs.submodules != 'false' && steps.meta.outputs.has_submodules == 'true'
       shell: bash
@@ -178,8 +169,7 @@ runs:
         git config --local http.lowSpeedTime 60 || true
         git config --local http.postBuffer 524288000 || true
 
-        # shellcheck disable=SC2086
-        git submodule sync $RECURSIVE_FLAG >/dev/null 2>&1
+        git submodule sync $RECURSIVE_FLAG
 
         if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ]; then
           VERB="Restoring"
@@ -189,22 +179,26 @@ runs:
 
         NAMES=()
         PATHS=()
-        while IFS= read -r line; do
-          [ -z "$line" ] && continue
-          key="${line%% *}"
-          path="${line#* }"
+        while IFS= read -r key; do
+          [ -z "$key" ] && continue
+          path="$(git config --file .gitmodules --get "$key")"
+          [ -z "$path" ] && continue
           name="${key#submodule.}"
           name="${name%.path}"
           NAMES+=("$name")
           PATHS+=("$path")
-        done < <(git config --file .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null)
+        done < <(git config --file .gitmodules --name-only --get-regexp '^submodule\..*\.path$')
 
-        TOTAL="${#NAMES[@]}"
+        MAX="${#PATHS[@]}"
+        if [ "$MAX" -eq 0 ]; then
+          echo "No first-level submodules"
+          exit 0
+        fi
 
         is_transient_error() {
           local log="$1"
           if echo "$log" | grep -Eiq \
-            'returned error: 404|HTTP[[:space:]]*404|Repository not found|not found\.|could not read Username|Authentication failed|Permission denied|returned error: 401|returned error: 403|ERROR: Repository not found|does not exist|invalid pathspec|No url found for submodule'; then
+            'returned error: 404|HTTP[[:space:]]*404|Repository not found|not found\.|could not read Username|Authentication failed|Permission denied|returned error: 401|returned error: 403|ERROR: Repository not found|does not exist|invalid pathspec|pathspec .* did not match|No url found for submodule'; then
             return 1
           fi
           if echo "$log" | grep -Eiq \
@@ -221,50 +215,44 @@ runs:
         if [ "$max" -lt 1 ]; then max=1; fi
 
         i=0
-        while [ "$i" -lt "$TOTAL" ]; do
-          name="${NAMES[$i]}"
-          path="${PATHS[$i]}"
-          n=$((i + 1))
-          echo "${VERB} ${name} [${n}/${TOTAL}]"
+        for path in "${PATHS[@]}"; do
+          i=$((i + 1))
+          name="${NAMES[$((i - 1))]}"
+          echo "${VERB} ${name} [${i}/${MAX}]"
 
           attempt=1
           while true; do
             set +e
-            # Nested clones stay under this direct module; not logged.
-            # shellcheck disable=SC2086
             git submodule update --init $RECURSIVE_FLAG --force --jobs 1 -- "$path" \
-              >/tmp/submodule-update.log 2>&1
+              > /tmp/submodule-update.log 2>&1
             rc=$?
             set -e
-            out="$(cat /tmp/submodule-update.log 2>/dev/null || true)"
 
             if [ "$rc" -eq 0 ]; then
               break
             fi
 
+            out="$(cat /tmp/submodule-update.log 2>/dev/null || true)"
+            echo "$out"
+
             if ! is_transient_error "$out"; then
-              echo "$out"
+              echo "Permanent submodule error: ${name} (${path})"
               exit "$rc"
             fi
 
             if [ "$attempt" -ge "$max" ]; then
-              echo "$out"
+              echo "Failed after ${max} transient attempt(s): ${name} (${path})"
               exit "$rc"
             fi
 
             sleep_secs=$((base * attempt))
+            echo "Transient failure for ${name} (attempt ${attempt}/${max}) — retry in ${sleep_secs}s"
             sleep "$sleep_secs"
             attempt=$((attempt + 1))
-            # shellcheck disable=SC2086
-            git submodule sync $RECURSIVE_FLAG >/dev/null 2>&1 || true
+            git submodule sync $RECURSIVE_FLAG || true
           done
-
-          i=$((i + 1))
         done
 
-    ###########################################################################
-    # 5. SAVE SUBMODULE CACHE (only on miss)
-    ###########################################################################
     - name: Save submodule cache
       if: >-
         inputs.submodules != 'false'
@@ -275,9 +263,6 @@ runs:
         path: ${{ steps.meta.outputs.cache_paths }}
         key: ${{ steps.meta.outputs.cache_key }}
 
-    ###########################################################################
-    # 6. PRUNE OLD SUBMODULE CACHES (same OS only; keep the key just saved)
-    ###########################################################################
     - name: Prune old submodule caches
       if: >-
         inputs.submodules != 'false'
@@ -293,28 +278,45 @@ runs:
         set -euo pipefail
 
         if ! command -v gh >/dev/null 2>&1; then
+          echo "gh not available – skipping prune"
           exit 0
         fi
+
+        echo "Pruning caches with prefix '${PREFIX}' except '${KEEP_KEY}'"
 
         ENTRIES=()
         while IFS= read -r line; do
           [ -n "$line" ] && ENTRIES+=("$line")
         done < <(
           gh cache list --key "${PREFIX}" --limit 100 \
-            --json id,key \
-            --jq '.[] | "\(.id)\t\(.key)"' \
+            --json id,key,sizeInBytes \
+            --jq '.[] | "\(.id)\t\(.key)\t\(.sizeInBytes)"' \
             2>/dev/null || true
         )
 
         if [ ${#ENTRIES[@]} -eq 0 ]; then
+          echo "No matching caches to prune"
           exit 0
         fi
 
+        deleted=0
         for entry in "${ENTRIES[@]}"; do
           id="${entry%%	*}"
-          key="${entry#*	}"
+          rest="${entry#*	}"
+          key="${rest%%	*}"
+          size="${rest#*	}"
+
           if [ -z "$id" ] || [ "$key" = "$KEEP_KEY" ]; then
+            echo "Keep: $key"
             continue
           fi
-          gh cache delete "$id" >/dev/null 2>&1 || true
+
+          echo "Delete: id=$id key=$key size=${size:-?}B"
+          if gh cache delete "$id" 2>/dev/null; then
+            deleted=$((deleted + 1))
+          else
+            echo "  (delete failed – ignored)"
+          fi
         done
+
+        echo "Pruned $deleted old cache(s)"
