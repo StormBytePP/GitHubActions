@@ -110,6 +110,9 @@ runs:
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-${{ env.GCC_VERSION }} 140
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-${{ env.GCC_VERSION }} 140
           echo "✅ Registered gcc/g++ ${{ env.GCC_VERSION }}"
+          command -v gcc
+          command -v g++
+          command -v ar
         else
           sudo update-alternatives --remove-all clang  || true
           sudo update-alternatives --remove-all clang++ || true
@@ -117,9 +120,21 @@ runs:
             --slave /usr/bin/clang++ clang++ /usr/bin/clang++-${{ env.CLANG_VERSION }}
 
           sudo update-alternatives --remove-all lld || true
+          sudo update-alternatives --remove-all ld.lld || true
           sudo update-alternatives --install /usr/bin/lld lld /usr/bin/lld-${{ env.CLANG_VERSION }} 200
           sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-${{ env.CLANG_VERSION }} 200
-          echo "✅ Registered clang/clang++/lld ${{ env.CLANG_VERSION }}"
+
+          sudo update-alternatives --remove-all llvm-ar || true
+          sudo update-alternatives --remove-all llvm-ranlib || true
+          sudo update-alternatives --install /usr/bin/llvm-ar llvm-ar /usr/bin/llvm-ar-${{ env.CLANG_VERSION }} 200
+          sudo update-alternatives --install /usr/bin/llvm-ranlib llvm-ranlib /usr/bin/llvm-ranlib-${{ env.CLANG_VERSION }} 200
+
+          echo "✅ Registered clang/clang++/lld/ld.lld/llvm-ar/llvm-ranlib ${{ env.CLANG_VERSION }}"
+          command -v clang
+          command -v clang++
+          command -v ld.lld
+          command -v llvm-ar
+          llvm-ar --version | head -n 1
         fi
 
     ###########################################################################
