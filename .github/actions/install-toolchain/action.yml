@@ -21,6 +21,9 @@ inputs:
   install-meson:
     description: "Install Meson via pip (default: true). Pinned to 1.10.0 on Windows only; latest on Linux/macOS"
     default: "true"
+  install-ninja:
+    description: "Install Ninja via pip (default: true). Portable on Linux, macOS and Windows"
+    default: "true"
 
 outputs:
   c_compiler:
@@ -177,10 +180,10 @@ runs:
         fi
 
     ###########################################################################
-    # 3. MESON (pip)
+    # 3. PYTHON + MESON / NINJA (pip)
     ###########################################################################
     - name: Setup Python
-      if: inputs.install-meson == 'true'
+      if: inputs.install-meson == 'true' || inputs.install-ninja == 'true'
       uses: actions/setup-python@v7
       with:
         python-version: "3.x"
@@ -242,6 +245,42 @@ runs:
         fi
 
         echo "✅ Meson installed successfully"
+
+    - name: Install Ninja (pip)
+      if: inputs.install-ninja == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        echo "────────────────────────────────────────────────────────"
+        echo "🐍 Installing Ninja via pip"
+        echo "────────────────────────────────────────────────────────"
+
+        PY=""
+        for c in python3 python; do
+          if command -v "$c" >/dev/null 2>&1; then
+            PY="$c"
+            break
+          fi
+        done
+        if [ -z "$PY" ]; then
+          echo "❌ python not found after setup-python"
+          exit 1
+        fi
+
+        echo "Python: $($PY -c 'import sys; print(sys.executable)')"
+        $PY -m pip install --upgrade pip
+        $PY -m pip install --force-reinstall --no-cache-dir ninja
+
+        SCRIPTS="$($PY -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
+        if [ -n "$SCRIPTS" ] && [ -d "$SCRIPTS" ]; then
+          echo "$SCRIPTS" >> "$GITHUB_PATH"
+          export PATH="$SCRIPTS:$PATH"
+        fi
+
+        echo "ninja on PATH: $(command -v ninja || echo none)"
+        ninja --version
+        echo "✅ Ninja installed successfully"
 
     ###########################################################################
     # 4. WINDOWS – MSVC env (+ clang-cl / LLVM LTO tools if requested) + sccache
@@ -307,7 +346,6 @@ runs:
         $needInstall = -not $clangCl
 
         if (-not $needInstall) {
-          # Same install must also provide LTO helpers (static libs + link)
           foreach ($t in @("lld-link.exe", "llvm-lib.exe", "llvm-ar.exe")) {
             if (-not (Find-Tool $t)) {
               Write-Host "Missing $t next to existing clang-cl; will (re)install LLVM package"
@@ -330,7 +368,6 @@ runs:
         $lldLink = Require-Tool "lld-link.exe"
         $llvmLib = Require-Tool "llvm-lib.exe"
         $llvmAr  = Require-Tool "llvm-ar.exe"
-        # Optional but useful for IPO static archives
         $llvmRanlib = Find-Tool "llvm-ranlib.exe"
         if ($llvmRanlib) { Write-Host "llvm-ranlib.exe : $llvmRanlib" }
 
@@ -338,7 +375,6 @@ runs:
         $binDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         $env:Path = "$binDir;$env:Path"
 
-        # Prefer LLVM bin over any other shadow for these tools
         foreach ($extra in @($lldLink, $llvmLib, $llvmAr)) {
           $d = Split-Path -Parent $extra
           if ($d -and ($d -ne $binDir)) {
