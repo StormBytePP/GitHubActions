@@ -272,12 +272,24 @@ runs:
         $PY -m pip install --upgrade pip
         $PY -m pip install --force-reinstall --no-cache-dir ninja
 
+        BIN_DIR="$($PY -c 'import ninja; print(ninja.BIN_DIR)')"
+        if [ -z "$BIN_DIR" ] || [ ! -d "$BIN_DIR" ]; then
+          echo "❌ ninja.BIN_DIR missing after pip install"
+          exit 1
+        fi
+
+        # Real binary first. Scripts/ninja.exe is the wheel launcher; CMake
+        # CreateProcess cannot use it as CMAKE_MAKE_PROGRAM.
+        echo "$BIN_DIR" >> "$GITHUB_PATH"
+        export PATH="$BIN_DIR:$PATH"
+
         SCRIPTS="$($PY -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
         if [ -n "$SCRIPTS" ] && [ -d "$SCRIPTS" ]; then
           echo "$SCRIPTS" >> "$GITHUB_PATH"
-          export PATH="$SCRIPTS:$PATH"
+          export PATH="$PATH:$SCRIPTS"
         fi
 
+        echo "ninja.BIN_DIR: $BIN_DIR"
         echo "ninja on PATH: $(command -v ninja || echo none)"
         ninja --version
         echo "✅ Ninja installed successfully"
