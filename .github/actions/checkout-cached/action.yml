@@ -69,6 +69,13 @@ runs:
   using: "composite"
   steps:
 
+    - name: Enable Git long paths
+      shell: bash
+      run: |
+        set -euo pipefail
+        git config --global core.longpaths true
+        echo "core.longpaths=$(git config --global --get core.longpaths)"
+
     - name: Enable Git symlinks
       if: inputs.enable-symlinks == 'true'
       shell: bash
@@ -164,6 +171,8 @@ runs:
           RECURSIVE_FLAG="--recursive"
         fi
 
+        git config --global core.longpaths true
+        git config --local core.longpaths true
         git config --local http.version HTTP/1.1 || true
         git config --local http.lowSpeedLimit 1000 || true
         git config --local http.lowSpeedTime 60 || true
