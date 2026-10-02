@@ -19,7 +19,7 @@ inputs:
     description: "Non-empty also installs ccache (Linux/macOS) or sccache (Windows). Empty = skip"
     default: ""
   install-meson:
-    description: "Install Meson via pip (default: true). Pinned to 1.10.0 on Windows only; latest on Linux/macOS"
+    description: "Install Meson via pip (default: true). Requires 1.12.1 or newer on Windows; latest on Linux/macOS"
     default: "true"
   install-ninja:
     description: "Install Ninja via pip (default: true). Portable on Linux, macOS and Windows"
@@ -215,11 +215,9 @@ runs:
         $PY -m pip uninstall -y meson 2>/dev/null || true
 
         if [[ "${{ runner.os }}" == "Windows" ]]; then
-          MESON_SPEC='meson==1.10.0'
-          EXPECTED='1.10.0*'
+          MESON_SPEC='meson>=1.12.1'
         else
           MESON_SPEC='meson'
-          EXPECTED=''
         fi
 
         $PY -m pip install --force-reinstall --no-cache-dir "$MESON_SPEC"
@@ -233,16 +231,6 @@ runs:
         VER="$(meson --version 2>/dev/null | head -n1 | tr -d '\r' || true)"
         echo "meson on PATH: $(command -v meson || echo none)"
         echo "meson --version: ${VER:-unknown}"
-
-        if [[ -n "$EXPECTED" ]]; then
-          case "$VER" in
-            $EXPECTED) ;;
-            *)
-              echo "❌ Expected Meson 1.10.0 from pip, got: ${VER:-missing}"
-              exit 1
-              ;;
-          esac
-        fi
 
         echo "✅ Meson installed successfully"
 
