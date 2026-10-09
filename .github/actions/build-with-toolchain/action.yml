@@ -725,13 +725,11 @@ runs:
 
         $bt = "${{ inputs.build-type }}".ToLowerInvariant()
         if ($bt -eq "debug" -or $bt -eq "relwithdebinfo") {
-          Write-Host "Debug ${bt}: ProgramDatabase (/Zi) + /FS (no /Z7)"
+          Write-Host "Debug ${bt}: Embedded (/Z7) for sccache"
           $cmakeArgs.Add("-DCMAKE_POLICY_DEFAULT_CMP0141=NEW")
-          $cmakeArgs.Add("-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=ProgramDatabase")
-          $cmakeArgs.Add("-DCMAKE_C_FLAGS_INIT=/FS")
-          $cmakeArgs.Add("-DCMAKE_CXX_FLAGS_INIT=/FS")
+          $cmakeArgs.Add("-DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded")
         } else {
-          Write-Host "Release ${bt}: no /Z* and no /FS"
+          Write-Host "Release ${bt}: no debug information flags"
         }
 
         if ("${{ inputs.ccache-key }}" -ne "" -and (Get-Command sccache -ErrorAction SilentlyContinue)) {
