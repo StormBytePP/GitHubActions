@@ -140,10 +140,22 @@ runs:
         echo "cache_key=${CACHE_KEY}"
         echo "Submodule cache identity (gitlinks + .gitmodules), OS=${OS}"
 
+        # actions/cache resolves paths against $GITHUB_WORKSPACE, not this working-directory.
+        ROOT="${{ inputs.path }}"
+        ROOT="${ROOT%/}"
+        if [ -z "$ROOT" ] || [ "$ROOT" = "." ]; then
+          ROOT_PREFIX=""
+        else
+          ROOT_PREFIX="${ROOT}/"
+        fi
+        MODULES_DIR="$(git rev-parse --git-path modules)"
+
         {
           echo "cache_paths<<EOF"
-          echo ".git/modules"
-          printf '%s\n' "${PATHS[@]}"
+          echo "${ROOT_PREFIX}${MODULES_DIR}"
+          for p in "${PATHS[@]}"; do
+            echo "${ROOT_PREFIX}${p}"
+          done
           echo "EOF"
         } >> "$GITHUB_OUTPUT"
 
