@@ -7,7 +7,10 @@ branding:
 
 inputs:
   fetch-depth:
-    description: "Fetch depth for the parent repository (0 = full history)"
+    description: >
+      History depth for the parent repository and every submodule, recursively
+      (0 = full history). Submodules stay at the commits pinned by their parent.
+      Part of the submodule cache key, so shallow and full caches never mix.
     required: false
     default: "0"
 
@@ -101,6 +104,16 @@ runs:
       run: |
         set -euo pipefail
 
+        DEPTH="${{ inputs.fetch-depth }}"
+        case "$DEPTH" in
+          ''|*[!0-9]*)
+            echo "::error::fetch-depth must be a non-negative integer (got '${DEPTH}')"
+            exit 1
+            ;;
+        esac
+        DEPTH=$((10#$DEPTH))
+        echo "depth=${DEPTH}" >> "$GITHUB_OUTPUT"
+
         if [ ! -f .gitmodules ]; then
           echo "has_submodules=false" >> "$GITHUB_OUTPUT"
           echo "No .gitmodules found – skipping submodule cache"
@@ -132,13 +145,15 @@ runs:
 
         PREFIX="${{ inputs.cache-key-prefix }}"
         OS="${{ runner.os }}"
-        CACHE_KEY="${PREFIX}-${OS}-${HASH}"
-        PRUNE_PREFIX="${PREFIX}-${OS}-"
+        # Bump FORMAT whenever the cached Git layout changes; depth keeps shallow and full caches apart.
+        FORMAT="v2"
+        CACHE_KEY="${PREFIX}-${OS}-${FORMAT}-d${DEPTH}-${HASH}"
+        PRUNE_PREFIX="${PREFIX}-${OS}-${FORMAT}-d${DEPTH}-"
 
         echo "cache_key=${CACHE_KEY}" >> "$GITHUB_OUTPUT"
         echo "prune_prefix=${PRUNE_PREFIX}" >> "$GITHUB_OUTPUT"
         echo "cache_key=${CACHE_KEY}"
-        echo "Submodule cache identity (gitlinks + .gitmodules), OS=${OS}"
+        echo "Submodule cache identity (format ${FORMAT}, depth ${DEPTH}, gitlinks + .gitmodules), OS=${OS}"
 
         # actions/cache resolves paths against $GITHUB_WORKSPACE, not this working-directory.
         ROOT="${{ inputs.path }}"
@@ -175,12 +190,22 @@ runs:
         token: ${{ inputs.token }}
         MAX_ATTEMPTS: ${{ inputs.submodule-max-attempts }}
         RETRY_BASE: ${{ inputs.submodule-retry-base-seconds }}
+        DEPTH: ${{ steps.meta.outputs.depth }}
       run: |
         set -euo pipefail
 
         RECURSIVE_FLAG=""
         if [ "${{ inputs.submodules }}" = "recursive" ]; then
           RECURSIVE_FLAG="--recursive"
+        fi
+
+        # git forwards --depth to nested submodules when --recursive is used.
+        if [ "${DEPTH:-0}" -gt 0 ]; then
+          DEPTH_ARGS=(--depth "$DEPTH")
+          echo "Submodule depth: ${DEPTH}"
+        else
+          DEPTH_ARGS=(--no-recommend-shallow)
+          echo "Submodule depth: full history"
         fi
 
         git config --global core.longpaths true
@@ -235,17 +260,38 @@ runs:
         case "$base" in ''|*[!0-9]*) base=20 ;; esac
         if [ "$max" -lt 1 ]; then max=1; fi
 
+        is_missing_pin_error() {
+          echo "$1" | grep -Eiq \
+            'not our ref|did not contain|Unable to find current revision|reference is not a tree|unadvertised object|remote error: .*upload-pack'
+        }
+
+        # Unshallow only the repositories already cloned under one submodule path.
+        unshallow_tree() {
+          local root="$1" gitlink repo
+          while IFS= read -r gitlink; do
+            repo="$(dirname "$gitlink")"
+            if [ "$(git -C "$repo" rev-parse --is-shallow-repository 2>/dev/null || echo false)" = "true" ]; then
+              echo "  unshallow: ${repo}"
+              git -C "$repo" fetch --unshallow --no-tags origin || true
+            fi
+          done < <(find "$root" -name .git \( -type f -o -type d \) -prune -print 2>/dev/null)
+        }
+
+        LOG="${RUNNER_TEMP:-/tmp}/submodule-update.log"
+
         i=0
         for path in "${PATHS[@]}"; do
           i=$((i + 1))
           name="${NAMES[$((i - 1))]}"
           echo "${VERB} ${name} [${i}/${MAX}]"
 
+          PATH_DEPTH_ARGS=("${DEPTH_ARGS[@]}")
+          deepened=false
           attempt=1
           while true; do
             set +e
-            git submodule update --init $RECURSIVE_FLAG --force --jobs 1 -- "$path" \
-              > /tmp/submodule-update.log 2>&1
+            LC_ALL=C git submodule update --init $RECURSIVE_FLAG --force "${PATH_DEPTH_ARGS[@]}" --jobs 1 -- "$path" \
+              > "$LOG" 2>&1
             rc=$?
             set -e
 
@@ -253,8 +299,16 @@ runs:
               break
             fi
 
-            out="$(cat /tmp/submodule-update.log 2>/dev/null || true)"
+            out="$(cat "$LOG" 2>/dev/null || true)"
             echo "$out"
+
+            if [ "$deepened" = "false" ] && [ "${DEPTH:-0}" -gt 0 ] && is_missing_pin_error "$out"; then
+              echo "::warning::${name}: pinned commit not reachable with depth ${DEPTH} (direct SHA fetch refused or outside the shallow window). Falling back to full history for this submodule tree only."
+              unshallow_tree "$path"
+              PATH_DEPTH_ARGS=(--no-recommend-shallow)
+              deepened=true
+              continue
+            fi
 
             if ! is_transient_error "$out"; then
               echo "Permanent submodule error: ${name} (${path})"
