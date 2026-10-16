@@ -31,6 +31,8 @@ David C. Manuelda
 | `configure-options`  | No       | `""`        | Extra options passed to CMake configure. |
 | `target`             | No       | `""`        | Optional CMake target to build. Empty = build all. |
 | `run-tests`          | No       | `"false"`   | Whether to run `ctest` after the build. |
+| `install`            | No       | `"false"`   | Whether to run `cmake --install` after the build and tests. |
+| `install-location`   | No       | `""`        | Prefix for that install (`--prefix`). Empty keeps the configured prefix. |
 | `ctest-options`      | No       | `"--output-on-failure"` | Extra options for `ctest`. |
 | `version`            | No       | `""`        | Optional major version for gcc/clang. |
 | `docs`               | No       | `"false"`   | Install documentation tools (doxygen + graphviz). |
@@ -85,6 +87,18 @@ On Windows, Debug builds use `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded` (`/Z
     build-type: Release
     configure-options: -DENABLE_TEST=ON
     run-tests: true
+```
+
+### Install into a prefix
+
+```yaml
+- name: Build with toolchain
+  uses: stormbytepp/githubactions/.github/actions/build-with-toolchain@master
+  with:
+    toolchain: clang
+    build-type: Release
+    install: true
+    install-location: ${{ runner.temp }}/stormbyte
 ```
 
 ### Clang + libc++ with ASAN

@@ -56,6 +56,16 @@ inputs:
     required: false
     default: "false"
 
+  install:
+    description: "Run cmake --install after the build and tests"
+    required: false
+    default: "false"
+
+  install-location:
+    description: "cmake --install prefix. Empty keeps the prefix from configure."
+    required: false
+    default: ""
+
   ctest-options:
     description: "Extra options for ctest"
     required: false
@@ -954,6 +964,35 @@ runs:
         ctest --test-dir "${{ inputs.build-dir }}" ${CTEST_OPTIONS}
 
         echo "✅ Tests finished"
+
+    ###########################################################################
+    # 5c. INSTALL (optional)
+    ###########################################################################
+    - name: Install
+      if: inputs.install == 'true'
+      shell: bash
+      env:
+        INSTALL_PREFIX: ${{ inputs.install-location }}
+      run: |
+        set -euo pipefail
+
+        echo "────────────────────────────────────────────────────────"
+        echo "📦 Installing"
+        echo "   Build dir : ${{ inputs.build-dir }}"
+        if [ -n "${INSTALL_PREFIX}" ]; then
+          echo "   Prefix    : ${INSTALL_PREFIX}"
+        else
+          echo "   Prefix    : (configured default)"
+        fi
+        echo "────────────────────────────────────────────────────────"
+
+        if [ -n "${INSTALL_PREFIX}" ]; then
+          cmake --install "${{ inputs.build-dir }}" --prefix "${INSTALL_PREFIX}"
+        else
+          cmake --install "${{ inputs.build-dir }}"
+        fi
+
+        echo "✅ Install finished"
 
     ###########################################################################
     # 5b. STOP SCCACHE BEFORE SAVE
