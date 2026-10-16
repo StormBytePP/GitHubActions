@@ -132,7 +132,10 @@ runs:
           sudo update-alternatives --install /usr/bin/llvm-ar llvm-ar /usr/bin/llvm-ar-${{ env.CLANG_VERSION }} 200
           sudo update-alternatives --install /usr/bin/llvm-ranlib llvm-ranlib /usr/bin/llvm-ranlib-${{ env.CLANG_VERSION }} 200
 
-          echo "✅ Registered clang/clang++/lld/ld.lld/llvm-ar/llvm-ranlib ${{ env.CLANG_VERSION }}"
+          sudo update-alternatives --remove-all llvm-profdata || true
+          sudo update-alternatives --install /usr/bin/llvm-profdata llvm-profdata /usr/bin/llvm-profdata-${{ env.CLANG_VERSION }} 200
+
+          echo "✅ Registered clang/clang++/lld/ld.lld/llvm-ar/llvm-ranlib/llvm-profdata ${{ env.CLANG_VERSION }}"
           command -v clang
           command -v clang++
           command -v ld.lld
@@ -171,12 +174,30 @@ runs:
           command -v gcc >/dev/null
           echo "✅ gcc: $(command -v gcc)"
         else
-          echo "Using Apple Clang (Xcode); skipping Homebrew llvm"
+          echo "Using Apple Clang (Xcode); skipping Homebrew llvm as the compiler"
           command -v clang >/dev/null
           command -v clang++ >/dev/null
           echo "✅ clang:  $(command -v clang)"
           echo "✅ clang++: $(command -v clang++)"
           clang --version | head -n 2 || true
+
+          # PGO merge tool. Apple Clang does not put llvm-profdata on PATH.
+          PROF=""
+          if PROF="$(xcrun --find llvm-profdata 2>/dev/null)" && [[ -x "$PROF" ]]; then
+            echo "llvm-profdata from Xcode: $PROF"
+          else
+            echo "xcrun llvm-profdata missing; installing Homebrew llvm for the tool only"
+            brew install llvm
+            PROF="$(brew --prefix llvm)/bin/llvm-profdata"
+          fi
+          if [[ ! -x "$PROF" ]]; then
+            echo "::error::llvm-profdata not found"
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/pgo-bin"
+          ln -sfn "$PROF" "${RUNNER_TEMP}/pgo-bin/llvm-profdata"
+          echo "${RUNNER_TEMP}/pgo-bin" >> "$GITHUB_PATH"
+          echo "✅ llvm-profdata: $PROF"
         fi
 
     ###########################################################################
@@ -346,7 +367,7 @@ runs:
         $needInstall = -not $clangCl
 
         if (-not $needInstall) {
-          foreach ($t in @("lld-link.exe", "llvm-lib.exe", "llvm-ar.exe")) {
+          foreach ($t in @("lld-link.exe", "llvm-lib.exe", "llvm-ar.exe", "llvm-profdata.exe")) {
             if (-not (Find-Tool $t)) {
               Write-Host "Missing $t next to existing clang-cl; will (re)install LLVM package"
               $needInstall = $true
@@ -368,6 +389,7 @@ runs:
         $lldLink = Require-Tool "lld-link.exe"
         $llvmLib = Require-Tool "llvm-lib.exe"
         $llvmAr  = Require-Tool "llvm-ar.exe"
+        $llvmProf = Require-Tool "llvm-profdata.exe"
         $llvmRanlib = Find-Tool "llvm-ranlib.exe"
         if ($llvmRanlib) { Write-Host "llvm-ranlib.exe : $llvmRanlib" }
 
@@ -375,7 +397,7 @@ runs:
         $binDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         $env:Path = "$binDir;$env:Path"
 
-        foreach ($extra in @($lldLink, $llvmLib, $llvmAr)) {
+        foreach ($extra in @($lldLink, $llvmLib, $llvmAr, $llvmProf)) {
           $d = Split-Path -Parent $extra
           if ($d -and ($d -ne $binDir)) {
             $d | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
@@ -388,7 +410,7 @@ runs:
         Write-Host ""
         & $lldLink --version 2>&1 | Select-Object -First 2
         Write-Host ""
-        Write-Host "✅ clang-cl + lld-link + llvm-lib + llvm-ar ready (IPO/static libs OK)"
+        Write-Host "✅ clang-cl + lld-link + llvm-lib + llvm-ar + llvm-profdata ready (IPO/static libs and PGO)"
 
     - name: Install sccache binary
       if: runner.os == 'Windows' && inputs.ccache-key != ''
