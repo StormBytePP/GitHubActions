@@ -26,6 +26,7 @@ David C. Manuelda
 |----------------------|----------|-------------|-------------|
 | `toolchain`          | **Yes**  | —           | Toolchain to use: `gcc`, `clang`, `clang-libc++` (Linux/macOS) or `msvc` (Windows). |
 | `ccache-key`         | No       | `""`        | Base cache key for ccache / sccache. Leave empty to disable compiler caching. |
+| `buildmaster-datadir-cache-key` | No | `""` | Cache key for BuildMaster's data directory. Empty skips it. Non-empty restores that folder and passes it as `-DBUILDMASTER_DATADIR`. |
 | `build-dir`          | No       | `"build"`   | CMake build directory. |
 | `build-type`         | No       | `"Debug"`   | CMake build type (`Debug`, `Release`, …). |
 | `configure-options`  | No       | `""`        | Extra options passed to CMake configure. |
@@ -51,6 +52,7 @@ David C. Manuelda
 |----------|------|--------|
 | **Linux / macOS** | **ccache** | Wrappers on `PATH` |
 | **Windows** | **sccache** | Via `CMAKE_*_COMPILER_LAUNCHER=sccache` |
+| **Any** | **BuildMaster datadir** | Only when `buildmaster-datadir-cache-key` is set. The folder is `${{ runner.temp }}/buildmaster-datadir` and CMake receives `-DBUILDMASTER_DATADIR`. The string is the cache key; include the OS if two jobs must not share downloads. |
 
 The action:
 

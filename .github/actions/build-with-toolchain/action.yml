@@ -26,6 +26,16 @@ inputs:
     required: false
     default: ""
 
+  buildmaster-datadir-cache-key:
+    description: >
+      Cache key for BuildMaster's data directory. Empty skips that cache and
+      does not pass BUILDMASTER_DATADIR. Non-empty restores and saves
+      ${{ runner.temp }}/buildmaster-datadir under this key and configures
+      CMake with -DBUILDMASTER_DATADIR pointing at that folder. Put the OS in
+      the key when jobs must not share downloads.
+    required: false
+    default: ""
+
   source-dir:
     description: "CMake source directory (-S)"
     required: false
@@ -173,57 +183,46 @@ runs:
         echo "✅ Compiler cache KEY=${KEY}"
         echo "✅ Compiler cache SAVE_KEY=${SAVE_KEY}"
 
-        DL_KEY="buildmaster-downloads-${OS}-${TOOL_S}-${SUFFIX_S}-${JOB_S}"
-        if [ -n "$SCOPE_S" ]; then
-          DL_KEY="${DL_KEY}-${SCOPE_S}"
-        fi
-        DL_SAVE_KEY="${DL_KEY}-${{ github.run_id }}-${{ github.run_attempt }}"
-        echo "downloads_cache_key=${DL_KEY}" >> "$GITHUB_OUTPUT"
-        echo "downloads_save_key=${DL_SAVE_KEY}" >> "$GITHUB_OUTPUT"
-        echo "✅ Downloads cache KEY=${DL_KEY}"
-        echo "✅ Downloads cache SAVE_KEY=${DL_SAVE_KEY}"
-
     ###########################################################################
-    # 0b. DETECT STORMBYTE-BUILDMASTER
+    # 0b. BUILDMASTER DATADIR CACHE
     ###########################################################################
-    - name: Detecting StormByte-BuildMaster
+    - name: Prepare BuildMaster data directory
+      if: inputs.buildmaster-datadir-cache-key != ''
       id: buildmaster
       shell: bash
       run: |
         set -euo pipefail
 
-        echo "🔍 Looking for StormByte-BuildMaster submodule..."
-
-        DETECTED="false"
-        DOWNLOADS_DIR=""
-        DOWNLOADS_REL=""
-
-        if [ -f .gitmodules ]; then
-          while IFS= read -r -d '' key; do
-            path=$(git config -f .gitmodules --get "$key")
-            name="${key#submodule.}"
-            name="${name%.path}"
-            url=$(git config -f .gitmodules --get "submodule.${name}.url" 2>/dev/null || true)
-
-            if echo "$name" | grep -qiE 'StormByte-BuildMaster|BuildMaster|Build Master' || \
-               echo "$url"  | grep -qiE 'StormByte-BuildMaster|StormBytePP/StormByte-BuildMaster'; then
-              DETECTED="true"
-              DOWNLOADS_REL="${path}/downloads"
-              DOWNLOADS_DIR="${{ inputs.build-dir }}/${DOWNLOADS_REL}"
-              break
-            fi
-          done < <(git config -f .gitmodules --null --name-only --get-regexp 'submodule\..*\.path' 2>/dev/null || true)
+        KEY="$(echo '${{ inputs.buildmaster-datadir-cache-key }}' | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+        if [ -z "$KEY" ]; then
+          echo "❌ buildmaster-datadir-cache-key is empty after trim"
+          exit 1
         fi
 
-        if [ "$DETECTED" = "true" ]; then
-          echo "✅ StormByte-BuildMaster detected → downloads cache for ${DOWNLOADS_REL}"
-          echo "detected=true" >> "$GITHUB_OUTPUT"
-          echo "downloads_dir=${DOWNLOADS_DIR}" >> "$GITHUB_OUTPUT"
+        sanitize() {
+          echo "$1" | sed 's/[^A-Za-z0-9._-]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//'
+        }
+        KEY_S="$(sanitize "$KEY")"
+        if [ -z "$KEY_S" ]; then
+          echo "❌ buildmaster-datadir-cache-key has no usable characters"
+          exit 1
+        fi
+
+        if [ -n "${RUNNER_TEMP:-}" ]; then
+          DATADIR="${RUNNER_TEMP}/buildmaster-datadir"
         else
-          echo "ℹ️  StormByte-BuildMaster not detected – skipping downloads cache"
-          echo "detected=false" >> "$GITHUB_OUTPUT"
-          echo "downloads_dir=" >> "$GITHUB_OUTPUT"
+          DATADIR="${{ github.workspace }}/.buildmaster-datadir"
         fi
+        mkdir -p "$DATADIR"
+
+        SAVE_KEY="${KEY_S}-${{ github.run_id }}-${{ github.run_attempt }}"
+        echo "datadir=${DATADIR}" >> "$GITHUB_OUTPUT"
+        echo "cache_key=${KEY_S}" >> "$GITHUB_OUTPUT"
+        echo "save_key=${SAVE_KEY}" >> "$GITHUB_OUTPUT"
+        echo "BUILDMASTER_DATADIR=${DATADIR}" >> "$GITHUB_ENV"
+        echo "📁 BUILDMASTER_DATADIR=${DATADIR}"
+        echo "✅ BuildMaster datadir KEY=${KEY_S}"
+        echo "✅ BuildMaster datadir SAVE_KEY=${SAVE_KEY}"
 
     ###########################################################################
     # 1. INSTALL TOOLCHAIN
@@ -472,23 +471,23 @@ runs:
     ###########################################################################
     # 1d. RESTORE + PREPARE DOWNLOADS CACHE
     ###########################################################################
-    - name: Restore downloads cache
-      id: restore-downloads
-      if: inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
+    - name: Restore BuildMaster data directory
+      id: restore-buildmaster
+      if: inputs.buildmaster-datadir-cache-key != ''
       uses: actions/cache/restore@v6
       with:
-        path: ${{ steps.buildmaster.outputs.downloads_dir }}
-        key: ${{ steps.cachekeys.outputs.downloads_save_key }}
+        path: ${{ steps.buildmaster.outputs.datadir }}
+        key: ${{ steps.buildmaster.outputs.save_key }}
         restore-keys: |
-          ${{ steps.cachekeys.outputs.downloads_cache_key }}-${{ github.run_id }}-
-          ${{ steps.cachekeys.outputs.downloads_cache_key }}-
+          ${{ steps.buildmaster.outputs.cache_key }}-${{ github.run_id }}-
+          ${{ steps.buildmaster.outputs.cache_key }}-
 
-    - name: Ensure downloads directory exists
-      if: inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
+    - name: Ensure BuildMaster data directory exists
+      if: inputs.buildmaster-datadir-cache-key != ''
       shell: bash
       run: |
-        mkdir -p "${{ steps.buildmaster.outputs.downloads_dir }}"
-        echo "📁 Downloads directory ready: ${{ steps.buildmaster.outputs.downloads_dir }}"
+        mkdir -p "${{ steps.buildmaster.outputs.datadir }}"
+        echo "📁 BUILDMASTER_DATADIR=${{ steps.buildmaster.outputs.datadir }}"
 
     ###########################################################################
     # 1e. WINDOWS PATH: linker first; GNU/Git deferred to end (gzip/tar still work)
@@ -638,6 +637,12 @@ runs:
           esac
         fi
 
+        BM_ARGS=()
+        if [ -n "${BUILDMASTER_DATADIR:-}" ]; then
+          BM_ARGS+=("-DBUILDMASTER_DATADIR=${BUILDMASTER_DATADIR}")
+          echo "📁 BUILDMASTER_DATADIR=${BUILDMASTER_DATADIR}"
+        fi
+
         # shellcheck disable=SC2086
         cmake -S "${{ inputs.source-dir }}" -B "${{ inputs.build-dir }}" \
           -G Ninja \
@@ -646,6 +651,7 @@ runs:
           -DCMAKE_CXX_COMPILER="${{ steps.toolchain.outputs.cxx_compiler }}" \
           ${LAUNCHER_ARGS[@]+"${LAUNCHER_ARGS[@]}"} \
           ${LINKER_ARGS[@]+"${LINKER_ARGS[@]}"} \
+          ${BM_ARGS[@]+"${BM_ARGS[@]}"} \
           ${CONFIGURE_OPTIONS}
 
         echo "✅ CMake configure finished"
@@ -731,6 +737,12 @@ runs:
           $cmakeArgs.Add("-DCMAKE_LINKER=$linkExe")
           $cmakeArgs.Add("-DCMAKE_C_COMPILER_LINKER=$linkExe")
           $cmakeArgs.Add("-DCMAKE_CXX_COMPILER_LINKER=$linkExe")
+        }
+
+        if ($env:BUILDMASTER_DATADIR) {
+          $bmDir = ($env:BUILDMASTER_DATADIR -replace '\\', '/')
+          Write-Host "BUILDMASTER_DATADIR=$bmDir"
+          $cmakeArgs.Add("-DBUILDMASTER_DATADIR=$bmDir")
         }
 
         $bt = "${{ inputs.build-type }}".ToLowerInvariant()
@@ -1030,13 +1042,13 @@ runs:
     ###########################################################################
     # 7. SAVE DOWNLOADS CACHE
     ###########################################################################
-    - name: Save downloads cache
-      if: always() && inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
+    - name: Save BuildMaster data directory
+      if: always() && inputs.buildmaster-datadir-cache-key != ''
       continue-on-error: true
       uses: actions/cache/save@v6
       with:
-        path: ${{ steps.buildmaster.outputs.downloads_dir }}
-        key: ${{ steps.cachekeys.outputs.downloads_save_key }}
+        path: ${{ steps.buildmaster.outputs.datadir }}
+        key: ${{ steps.buildmaster.outputs.save_key }}
 
     ###########################################################################
     # 8. CLEANUP OLD CACHES
@@ -1097,14 +1109,14 @@ runs:
             }
           }
 
-    - name: Cleanup old downloads cache entries
-      if: always() && inputs.ccache-key != '' && steps.buildmaster.outputs.detected == 'true'
+    - name: Cleanup old BuildMaster data directory caches
+      if: always() && inputs.buildmaster-datadir-cache-key != ''
       continue-on-error: true
       uses: actions/github-script@v9
       with:
         script: |
-          const keyPrefix = `${{ steps.cachekeys.outputs.downloads_cache_key }}-`;
-          const currentKey = `${{ steps.cachekeys.outputs.downloads_save_key }}`;
+          const keyPrefix = `${{ steps.buildmaster.outputs.cache_key }}-`;
+          const currentKey = `${{ steps.buildmaster.outputs.save_key }}`;
           const caches = await github.paginate(
             github.rest.actions.getActionsCacheList,
             {
@@ -1116,7 +1128,7 @@ runs:
           );
           for (const cache of caches) {
             if (cache.key !== currentKey) {
-              console.log(`Deleting old downloads cache: ${cache.key} (id=${cache.id})`);
+              console.log(`Deleting old BuildMaster datadir cache: ${cache.key} (id=${cache.id})`);
               await github.rest.actions.deleteActionsCacheById({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
