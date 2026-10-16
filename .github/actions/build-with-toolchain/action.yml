@@ -30,7 +30,7 @@ inputs:
     description: >
       Cache key for BuildMaster's data directory. Empty skips that cache and
       does not pass BUILDMASTER_DATADIR. Non-empty restores and saves
-      ${{ runner.temp }}/buildmaster-datadir under this key and configures
+      $RUNNER_TEMP/buildmaster-datadir under this key and configures
       CMake with -DBUILDMASTER_DATADIR pointing at that folder. Put the OS in
       the key when jobs must not share downloads.
     required: false
