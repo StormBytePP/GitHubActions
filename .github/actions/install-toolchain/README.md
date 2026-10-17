@@ -129,7 +129,7 @@ David C. Manuelda
 ## Notes
 
 - On Linux the APT packages are installed through the companion action `install-cached`, which provides deterministic caching of `.deb` files.
-- On macOS packages are installed with Homebrew.
+- On macOS, `toolchain: gcc` outputs the Homebrew binaries `gcc-N` and `g++-N`. `/usr/bin/g++` is Apple Clang, and the keg does not put an unversioned `g++` ahead of it.
 - Compiler cache keys are automatically namespaced with the OS, toolchain and version.
 - A new cache entry is created on every successful run (using `github.run_id`) so the cache is always updated without needing to delete previous entries.
 - Meson installation can be disabled with `install-meson: false` if you don’t need it.

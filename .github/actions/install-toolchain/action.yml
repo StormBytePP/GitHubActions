@@ -168,11 +168,23 @@ runs:
         echo "────────────────────────────────────────────────────────"
 
         if [[ "${{ inputs.toolchain }}" == "gcc" ]]; then
+          # /usr/bin/gcc is Apple Clang. Homebrew gcc is keg-only and the
+          # unversioned names are not on PATH, so the versioned binaries are
+          # the compiler. GITHUB_PATH applies to the next step, not this one.
           PREFIX="$(brew --prefix "gcc@${{ env.GCC_VERSION }}")"
+          CC_BIN="${PREFIX}/bin/gcc-${{ env.GCC_VERSION }}"
+          CXX_BIN="${PREFIX}/bin/g++-${{ env.GCC_VERSION }}"
+          if [[ ! -x "$CC_BIN" || ! -x "$CXX_BIN" ]]; then
+            echo "::error::Homebrew gcc@${{ env.GCC_VERSION }} did not install ${CXX_BIN}"
+            exit 1
+          fi
           echo "${PREFIX}/bin" >> "$GITHUB_PATH"
+          echo "CC=${CC_BIN}" >> "$GITHUB_ENV"
+          echo "CXX=${CXX_BIN}" >> "$GITHUB_ENV"
           echo "PATH += ${PREFIX}/bin (Homebrew gcc)"
-          command -v gcc >/dev/null
-          echo "✅ gcc: $(command -v gcc)"
+          echo "✅ gcc: $CC_BIN"
+          echo "✅ g++: $CXX_BIN"
+          "$CXX_BIN" --version | head -n 1
         else
           echo "Using Apple Clang (Xcode); skipping Homebrew llvm as the compiler"
           command -v clang >/dev/null
@@ -474,8 +486,19 @@ runs:
         else
           case "$TOOL" in
             gcc)
-              C_COMPILER="gcc"
-              CXX_COMPILER="g++"
+              if [[ "$OS" == "macOS" ]]; then
+                # Bare g++ is /usr/bin/g++, which is Apple Clang.
+                PREFIX="$(brew --prefix "gcc@${GCC_VERSION}")"
+                C_COMPILER="${PREFIX}/bin/gcc-${GCC_VERSION}"
+                CXX_COMPILER="${PREFIX}/bin/g++-${GCC_VERSION}"
+                if [[ ! -x "$C_COMPILER" || ! -x "$CXX_COMPILER" ]]; then
+                  echo "::error::Homebrew gcc@${GCC_VERSION} compiler not found (${CXX_COMPILER})"
+                  exit 1
+                fi
+              else
+                C_COMPILER="gcc"
+                CXX_COMPILER="g++"
+              fi
               ;;
             clang|clang-libc++)
               C_COMPILER="clang"
