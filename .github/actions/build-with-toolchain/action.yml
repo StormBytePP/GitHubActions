@@ -972,26 +972,6 @@ runs:
         echo "🧪 Running tests (Linux/macOS)"
         echo "────────────────────────────────────────────────────────"
 
-        # Append LLVM's lib dir. libc++ needs libunwind, and the default
-        # loader does not search it. Do not add project or BuildMaster
-        # directories: this action does not know that layout.
-        add_lib_dir() {
-          local name="$1" dir="$2"
-          [[ -d "$dir" ]] || return 0
-          local current="${!name-}"
-          case ":${current}:" in
-            *":${dir}:"*) return 0 ;;
-          esac
-          if [[ -n "$current" ]]; then
-            export "${name}=${dir}:${current}"
-          else
-            export "${name}=${dir}"
-          fi
-        }
-        if [[ "${{ inputs.toolchain }}" == "clang-libc++" && "${{ runner.os }}" == "Linux" ]]; then
-          add_lib_dir LD_LIBRARY_PATH "/usr/lib/llvm-${CLANG_VERSION:-20}/lib"
-        fi
-
         # shellcheck disable=SC2086
         ctest --test-dir "${{ inputs.build-dir }}" ${CTEST_OPTIONS}
 

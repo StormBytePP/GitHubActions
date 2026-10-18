@@ -143,6 +143,28 @@ runs:
           llvm-ar --version | head -n 1
         fi
 
+    - name: Add LLVM library directory (Linux clang)
+      if: runner.os == 'Linux' && (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++')
+      shell: bash
+      run: |
+        set -euo pipefail
+        # After the toolchain is installed. libc++ and the LLVM runtimes
+        # live here, and the default loader does not search this directory.
+        # Append. Do not replace a path that is already set.
+        dir="/usr/lib/llvm-${CLANG_VERSION}/lib"
+        current="${LD_LIBRARY_PATH:-}"
+        case ":${current}:" in
+          *":${dir}:"*) ;;
+          *)
+            if [[ -n "$current" ]]; then
+              echo "LD_LIBRARY_PATH=${current}:${dir}" >> "$GITHUB_ENV"
+            else
+              echo "LD_LIBRARY_PATH=${dir}" >> "$GITHUB_ENV"
+            fi
+            echo "LD_LIBRARY_PATH += ${dir}"
+            ;;
+        esac
+
     ###########################################################################
     # 2. macOS
     ###########################################################################
