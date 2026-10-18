@@ -972,9 +972,9 @@ runs:
         echo "🧪 Running tests (Linux/macOS)"
         echo "────────────────────────────────────────────────────────"
 
-        # Append. Do not assign the variable: a later step, or this one,
-        # would drop a path that is already there. libc++ needs LLVM's
-        # libunwind, and the default loader does not search llvm's lib dir.
+        # Append LLVM's lib dir. libc++ needs libunwind, and the default
+        # loader does not search it. Do not add project or BuildMaster
+        # directories: this action does not know that layout.
         add_lib_dir() {
           local name="$1" dir="$2"
           [[ -d "$dir" ]] || return 0
@@ -988,12 +988,6 @@ runs:
             export "${name}=${dir}"
           fi
         }
-        _root="${GITHUB_WORKSPACE}/${{ inputs.build-dir }}"
-        for _name in LD_LIBRARY_PATH DYLD_LIBRARY_PATH; do
-          add_lib_dir "$_name" "${_root}/lib"
-          add_lib_dir "$_name" "${_root}/buildmaster/install/lib"
-          add_lib_dir "$_name" "${_root}/buildmaster/install/lib64"
-        done
         if [[ "${{ inputs.toolchain }}" == "clang-libc++" && "${{ runner.os }}" == "Linux" ]]; then
           add_lib_dir LD_LIBRARY_PATH "/usr/lib/llvm-${CLANG_VERSION:-20}/lib"
         fi
