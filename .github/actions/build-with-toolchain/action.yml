@@ -159,6 +159,8 @@ runs:
           fi
           mkdir -p "$SCCACHE_DIR"
           echo "SCCACHE_DIR=${SCCACHE_DIR}" >> "$GITHUB_ENV"
+          echo "SCCACHE_SERVER_PORT=4226" >> "$GITHUB_ENV"
+          echo "SCCACHE_IDLE_TIMEOUT=0" >> "$GITHUB_ENV"
           export SCCACHE_DIR
           echo "📁 SCCACHE_DIR=${SCCACHE_DIR}"
         else
@@ -260,6 +262,8 @@ runs:
           fi
           mkdir -p "$SCCACHE_DIR"
           echo "SCCACHE_DIR=${SCCACHE_DIR}" >> "$GITHUB_ENV"
+          echo "SCCACHE_SERVER_PORT=4226" >> "$GITHUB_ENV"
+          echo "SCCACHE_IDLE_TIMEOUT=0" >> "$GITHUB_ENV"
 
           echo "CMAKE_C_COMPILER_LAUNCHER=sccache" >> "$GITHUB_ENV"
           echo "CMAKE_CXX_COMPILER_LAUNCHER=sccache" >> "$GITHUB_ENV"
@@ -450,23 +454,12 @@ runs:
 
     - name: Start sccache server
       if: inputs.ccache-key != '' && runner.os == 'Windows'
-      shell: bash
+      shell: pwsh
       run: |
-        set -euo pipefail
-        if [ -z "${SCCACHE_DIR:-}" ]; then
-          SCCACHE_DIR="${RUNNER_TEMP}/sccache"
-          echo "SCCACHE_DIR=${SCCACHE_DIR}" >> "$GITHUB_ENV"
-        fi
-        mkdir -p "$SCCACHE_DIR"
-        if ! command -v sccache >/dev/null 2>&1; then
-          echo "⚠️  sccache not on PATH; skip server"
-          exit 0
-        fi
-        sccache --stop-server 2>/dev/null || true
-        sccache --start-server
-        sccache --zero-stats 2>/dev/null || true
-        echo "✅ sccache server after restore (dir=${SCCACHE_DIR})"
-        sccache --show-stats || true
+        $ErrorActionPreference = 'Stop'
+        # Proves the binary can serve this job. The runner kills it when this
+        # step ends; configure, build and test start their own server.
+        & "${{ github.action_path }}/start-sccache.ps1"
 
     ###########################################################################
     # 1d. RESTORE + PREPARE DOWNLOADS CACHE
@@ -788,6 +781,9 @@ runs:
         }
 
         Write-Host "Running: cmake $($cmakeArgs -join ' ')"
+        if ("${{ inputs.ccache-key }}" -ne "") {
+          & "${{ github.action_path }}/start-sccache.ps1"
+        }
         & cmake @($cmakeArgs.ToArray())
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -876,6 +872,10 @@ runs:
         $jobs = [Environment]::ProcessorCount
         if ($jobs -lt 1) { $jobs = 4 }
 
+        if ("${{ inputs.ccache-key }}" -ne "") {
+          & "${{ github.action_path }}/start-sccache.ps1"
+        }
+
         $target = "${{ inputs.target }}"
         Write-Host "🚀 Starting build with $jobs jobs..."
         if ($target -ne "") {
@@ -886,6 +886,11 @@ runs:
           ninja -C "${{ inputs.build-dir }}" -j $jobs
         }
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        if ("${{ inputs.ccache-key }}" -ne "" -and (Get-Command sccache -ErrorAction SilentlyContinue)) {
+          Write-Host "sccache stats for this build step:"
+          & sccache --show-stats 2>&1 | ForEach-Object { Write-Host $_ }
+        }
 
         Write-Host "✅ Build finished successfully"
 
@@ -927,7 +932,8 @@ runs:
         echo "=============================================="
         if [[ "${{ runner.os }}" == "Windows" ]]; then
           echo "SCCACHE_DIR=${SCCACHE_DIR:-<unset>}"
-          command -v sccache >/dev/null 2>&1 && sccache --show-stats || echo "sccache not found in PATH"
+          echo "Windows drops the sccache server at the end of each step."
+          echo "Hit counts are printed at the end of the build step."
         else
           echo "CCACHE_DIR=${CCACHE_DIR:-<unset>}"
           command -v ccache >/dev/null 2>&1 && ccache -s || echo "ccache not found in PATH"
@@ -949,6 +955,10 @@ runs:
         Write-Host "────────────────────────────────────────────────────────"
         Write-Host "🧪 Running tests (Windows)"
         Write-Host "────────────────────────────────────────────────────────"
+
+        if ("${{ inputs.ccache-key }}" -ne "") {
+          & "${{ github.action_path }}/start-sccache.ps1"
+        }
 
         $opts = $env:CTEST_OPTIONS
         if ($opts) {
@@ -1015,7 +1025,6 @@ runs:
       run: |
         set +e
         if command -v sccache >/dev/null 2>&1; then
-          sccache --show-stats
           sccache --stop-server
         fi
         echo "✅ sccache server stopped (dir ready for cache/save)"
