@@ -103,7 +103,7 @@ inputs:
     description: >
       Deprecated no-op. Kept so existing workflows do not break.
       Windows debug info is derived from build-type: Debug/RelWithDebInfo
-      get /Zi + /FS; Release/MinSizeRel get no /Z* flags.
+      get /Z7; Release/MinSizeRel keep their default debug settings.
     required: false
     default: "true"
 
@@ -269,9 +269,10 @@ runs:
           echo "CMAKE_CXX_COMPILER_LAUNCHER=sccache" >> "$GITHUB_ENV"
 
           if command -v sccache >/dev/null 2>&1; then
-            echo "✅ sccache on PATH (server starts after cache restore, dir=${SCCACHE_DIR})"
+            echo "✅ sccache on PATH (server starts in compilation steps, dir=${SCCACHE_DIR})"
           else
-            echo "⚠️  WARNING: sccache not on PATH after install-toolchain"
+            echo "::error::sccache not on PATH after install-toolchain"
+            exit 1
           fi
         else
           CCACHE_DIR="${RUNNER_TEMP}/ccache"
@@ -292,7 +293,6 @@ runs:
             ccache -M 2G || true
             ccache -z || true
             echo "✅ ccache ready (dir=${CCACHE_DIR})"
-            ccache -s || true
           else
             echo "⚠️  WARNING: ccache not found in PATH after install-toolchain"
           fi
@@ -428,7 +428,7 @@ runs:
         Write-Host "✅ Windows clang-cl: lld-link + llvm-lib (LTO/static OK)"
 
     ###########################################################################
-    # 1c. RESTORE COMPILER CACHE  (then start sccache — not before)
+    # 1c. RESTORE COMPILER CACHE
     ###########################################################################
     - name: Restore ccache
       id: restore-ccache
@@ -451,15 +451,6 @@ runs:
         restore-keys: |
           ${{ steps.cachekeys.outputs.cache_key }}-${{ github.run_id }}-
           ${{ steps.cachekeys.outputs.cache_key }}-
-
-    - name: Start sccache server
-      if: inputs.ccache-key != '' && runner.os == 'Windows'
-      shell: pwsh
-      run: |
-        $ErrorActionPreference = 'Stop'
-        # Proves the binary can serve this job. The runner kills it when this
-        # step ends; configure, build and test start their own server.
-        & "${{ github.action_path }}/start-sccache.ps1"
 
     ###########################################################################
     # 1d. RESTORE + PREPARE DOWNLOADS CACHE
@@ -610,7 +601,6 @@ runs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           )
           echo "📦 Using ccache launcher (dir=${CCACHE_DIR})"
-          ccache -s || true
         fi
 
         LINKER_ARGS=()
@@ -784,8 +774,19 @@ runs:
         if ("${{ inputs.ccache-key }}" -ne "") {
           & "${{ github.action_path }}/start-sccache.ps1"
         }
-        & cmake @($cmakeArgs.ToArray())
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        try {
+          & cmake @($cmakeArgs.ToArray())
+          $configureExitCode = $LASTEXITCODE
+        } finally {
+          if ("${{ inputs.ccache-key }}" -ne "") {
+            $stopOutput = & sccache --stop-server 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              $stopOutput | ForEach-Object { Write-Host $_ }
+              throw "Could not stop sccache after configure"
+            }
+          }
+        }
+        if ($configureExitCode -ne 0) { exit $configureExitCode }
 
         Write-Host "CMake configure finished"
 
@@ -793,6 +794,7 @@ runs:
     # 3. BUILD
     ###########################################################################
     - name: Build (Windows)
+      id: build-windows
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
@@ -878,23 +880,40 @@ runs:
 
         $target = "${{ inputs.target }}"
         Write-Host "🚀 Starting build with $jobs jobs..."
-        if ($target -ne "") {
-          Write-Host "   Target: $target"
-          ninja -C "${{ inputs.build-dir }}" -j $jobs $target
-        } else {
-          Write-Host "   Target: all"
-          ninja -C "${{ inputs.build-dir }}" -j $jobs
+        try {
+          if ($target -ne "") {
+            Write-Host "   Target: $target"
+            ninja -C "${{ inputs.build-dir }}" -j $jobs $target
+          } else {
+            Write-Host "   Target: all"
+            ninja -C "${{ inputs.build-dir }}" -j $jobs
+          }
+          $buildExitCode = $LASTEXITCODE
+        } finally {
+          if ("${{ inputs.ccache-key }}" -ne "") {
+            try {
+              Write-Host "sccache statistics for this build (before tests):"
+              & sccache --show-stats
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "::warning::Could not read sccache build statistics"
+              }
+            } finally {
+              # Flush before Windows can terminate the compiling step's children.
+              $stopOutput = & sccache --stop-server 2>&1
+              if ($LASTEXITCODE -ne 0) {
+                $stopOutput | ForEach-Object { Write-Host $_ }
+                throw "Could not flush sccache; compiler cache will not be saved"
+              }
+              "sccache-ready=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            }
+          }
         }
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-        if ("${{ inputs.ccache-key }}" -ne "" -and (Get-Command sccache -ErrorAction SilentlyContinue)) {
-          Write-Host "sccache stats for this build step:"
-          & sccache --show-stats 2>&1 | ForEach-Object { Write-Host $_ }
-        }
+        if ($buildExitCode -ne 0) { exit $buildExitCode }
 
         Write-Host "✅ Build finished successfully"
 
     - name: Build (Linux/macOS)
+      id: build-unix
       if: runner.os != 'Windows'
       shell: bash
       run: |
@@ -921,8 +940,8 @@ runs:
     ###########################################################################
     # 4. CACHE STATS
     ###########################################################################
-    - name: Compiler cache stats
-      if: always() && inputs.ccache-key != ''
+    - name: ccache build statistics
+      if: always() && runner.os != 'Windows' && inputs.ccache-key != '' && (steps.build-unix.outcome == 'success' || steps.build-unix.outcome == 'failure')
       shell: bash
       run: |
         set +e
@@ -930,14 +949,8 @@ runs:
         echo "=============================================="
         echo " 📊 COMPILER CACHE STATISTICS"
         echo "=============================================="
-        if [[ "${{ runner.os }}" == "Windows" ]]; then
-          echo "SCCACHE_DIR=${SCCACHE_DIR:-<unset>}"
-          echo "Windows drops the sccache server at the end of each step."
-          echo "Hit counts are printed at the end of the build step."
-        else
-          echo "CCACHE_DIR=${CCACHE_DIR:-<unset>}"
-          command -v ccache >/dev/null 2>&1 && ccache -s || echo "ccache not found in PATH"
-        fi
+        echo "CCACHE_DIR=${CCACHE_DIR:-<unset>}"
+        command -v ccache >/dev/null 2>&1 && ccache -s || echo "::warning::Could not read ccache statistics"
         echo "=============================================="
         echo ""
 
@@ -955,10 +968,6 @@ runs:
         Write-Host "────────────────────────────────────────────────────────"
         Write-Host "🧪 Running tests (Windows)"
         Write-Host "────────────────────────────────────────────────────────"
-
-        if ("${{ inputs.ccache-key }}" -ne "") {
-          & "${{ github.action_path }}/start-sccache.ps1"
-        }
 
         $opts = $env:CTEST_OPTIONS
         if ($opts) {
@@ -1017,23 +1026,11 @@ runs:
         echo "✅ Install finished"
 
     ###########################################################################
-    # 5b. STOP SCCACHE BEFORE SAVE
-    ###########################################################################
-    - name: Stop sccache server
-      if: always() && runner.os == 'Windows' && inputs.ccache-key != ''
-      shell: bash
-      run: |
-        set +e
-        if command -v sccache >/dev/null 2>&1; then
-          sccache --stop-server
-        fi
-        echo "✅ sccache server stopped (dir ready for cache/save)"
-
-    ###########################################################################
     # 6. SAVE COMPILER CACHE
     ###########################################################################
     - name: Save ccache
-      if: always() && (runner.os == 'Linux' || runner.os == 'macOS') && inputs.ccache-key != ''
+      id: save-ccache
+      if: always() && !cancelled() && inputs.ccache-key != '' && (steps.build-unix.outcome == 'success' || steps.build-unix.outcome == 'failure')
       continue-on-error: true
       uses: actions/cache/save@v6
       with:
@@ -1041,7 +1038,8 @@ runs:
         key: ${{ steps.cachekeys.outputs.save_key }}
 
     - name: Save sccache
-      if: always() && runner.os == 'Windows' && inputs.ccache-key != ''
+      id: save-sccache
+      if: always() && !cancelled() && runner.os == 'Windows' && inputs.ccache-key != '' && steps.build-windows.outputs.sccache-ready == 'true'
       continue-on-error: true
       uses: actions/cache/save@v6
       with:
@@ -1052,7 +1050,8 @@ runs:
     # 7. SAVE DOWNLOADS CACHE
     ###########################################################################
     - name: Save BuildMaster data directory
-      if: always() && inputs.buildmaster-datadir-cache-key != ''
+      id: save-buildmaster
+      if: always() && !cancelled() && inputs.buildmaster-datadir-cache-key != '' && steps.buildmaster.outcome == 'success'
       continue-on-error: true
       uses: actions/cache/save@v6
       with:
@@ -1063,85 +1062,40 @@ runs:
     # 8. CLEANUP OLD CACHES
     ###########################################################################
     - name: Cleanup old ccache entries
-      if: always() && (runner.os == 'Linux' || runner.os == 'macOS') && inputs.ccache-key != ''
+      if: always() && !cancelled() && steps.save-ccache.outcome == 'success'
       continue-on-error: true
       uses: actions/github-script@v9
+      env:
+        CACHE_ACTION_PATH: ${{ github.action_path }}
+        CACHE_KEY: ${{ steps.cachekeys.outputs.cache_key }}
+        CACHE_SAVE_KEY: ${{ steps.cachekeys.outputs.save_key }}
       with:
         script: |
-          const keyPrefix = `${{ steps.cachekeys.outputs.cache_key }}-`;
-          const currentKey = `${{ steps.cachekeys.outputs.save_key }}`;
-          const caches = await github.paginate(
-            github.rest.actions.getActionsCacheList,
-            {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              key: keyPrefix,
-              per_page: 100
-            }
-          );
-          for (const cache of caches) {
-            if (cache.key !== currentKey) {
-              console.log(`Deleting old cache: ${cache.key} (id=${cache.id})`);
-              await github.rest.actions.deleteActionsCacheById({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                cache_id: cache.id
-              });
-            }
-          }
+          const cleanup = require(require('path').join(process.env.CACHE_ACTION_PATH, 'cleanup-cache.cjs'));
+          await cleanup({ github, context, core });
 
     - name: Cleanup old sccache entries
-      if: always() && runner.os == 'Windows' && inputs.ccache-key != ''
+      if: always() && !cancelled() && steps.save-sccache.outcome == 'success'
       continue-on-error: true
       uses: actions/github-script@v9
+      env:
+        CACHE_ACTION_PATH: ${{ github.action_path }}
+        CACHE_KEY: ${{ steps.cachekeys.outputs.cache_key }}
+        CACHE_SAVE_KEY: ${{ steps.cachekeys.outputs.save_key }}
       with:
         script: |
-          const keyPrefix = `${{ steps.cachekeys.outputs.cache_key }}-`;
-          const currentKey = `${{ steps.cachekeys.outputs.save_key }}`;
-          const caches = await github.paginate(
-            github.rest.actions.getActionsCacheList,
-            {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              key: keyPrefix,
-              per_page: 100
-            }
-          );
-          for (const cache of caches) {
-            if (cache.key !== currentKey) {
-              console.log(`Deleting old cache: ${cache.key} (id=${cache.id})`);
-              await github.rest.actions.deleteActionsCacheById({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                cache_id: cache.id
-              });
-            }
-          }
+          const cleanup = require(require('path').join(process.env.CACHE_ACTION_PATH, 'cleanup-cache.cjs'));
+          await cleanup({ github, context, core });
 
     - name: Cleanup old BuildMaster data directory caches
-      if: always() && inputs.buildmaster-datadir-cache-key != ''
+      if: always() && !cancelled() && steps.save-buildmaster.outcome == 'success'
       continue-on-error: true
       uses: actions/github-script@v9
+      env:
+        CACHE_ACTION_PATH: ${{ github.action_path }}
+        CACHE_KEY: ${{ steps.buildmaster.outputs.cache_key }}
+        CACHE_SAVE_KEY: ${{ steps.buildmaster.outputs.save_key }}
       with:
         script: |
-          const keyPrefix = `${{ steps.buildmaster.outputs.cache_key }}-`;
-          const currentKey = `${{ steps.buildmaster.outputs.save_key }}`;
-          const caches = await github.paginate(
-            github.rest.actions.getActionsCacheList,
-            {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              key: keyPrefix,
-              per_page: 100
-            }
-          );
-          for (const cache of caches) {
-            if (cache.key !== currentKey) {
-              console.log(`Deleting old BuildMaster datadir cache: ${cache.key} (id=${cache.id})`);
-              await github.rest.actions.deleteActionsCacheById({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                cache_id: cache.id
-              });
-            }
-          }
+          const cleanup = require(require('path').join(process.env.CACHE_ACTION_PATH, 'cleanup-cache.cjs'));
+          await cleanup({ github, context, core });

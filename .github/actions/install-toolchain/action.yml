@@ -458,7 +458,7 @@ runs:
         Write-Host "────────────────────────────────────────────────────────"
 
         $version = "0.10.0"
-        $extractDir = "$env:RUNNER_TEMP\sccache"
+        $extractDir = "$env:RUNNER_TEMP\sccache-bin"
         $zipName = "sccache-v$version-x86_64-pc-windows-msvc"
         $zipUrl = "https://github.com/mozilla/sccache/releases/download/v$version/$zipName.zip"
         $zipPath = "$env:RUNNER_TEMP\sccache.zip"

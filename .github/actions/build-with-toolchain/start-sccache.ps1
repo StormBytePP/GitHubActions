@@ -1,13 +1,9 @@
-# The Windows runner kills every process a step started when that step ends.
-# A server from an earlier step is already gone, and the next sccache client
-# logs "connection refused" (10061) and compiles without the cache. Call this
-# inside each step that runs the compiler, before any parallel launch.
-$ErrorActionPreference = 'Continue'
+# Start inside each compilation step, before parallel compiler launches.
+$ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
 if (-not (Get-Command sccache -ErrorAction SilentlyContinue)) {
-    Write-Host 'sccache not on PATH; compiler cache disabled'
-    return
+    throw 'sccache not on PATH although compiler caching was requested'
 }
 
 if ([string]::IsNullOrWhiteSpace($env:SCCACHE_DIR)) {
@@ -44,11 +40,10 @@ if ($LASTEXITCODE -ne 0) {
     throw "sccache --start-server failed ($LASTEXITCODE)"
 }
 
-$stats = & sccache --show-stats 2>&1
+$stats = & sccache --zero-stats 2>&1
 if ($LASTEXITCODE -ne 0) {
     $stats | ForEach-Object { Write-Host $_ }
     throw "sccache server is not accepting clients ($LASTEXITCODE)"
 }
 
 Write-Host "sccache server up (dir=$($env:SCCACHE_DIR) port=$($env:SCCACHE_SERVER_PORT))"
-$stats | ForEach-Object { Write-Host $_ }

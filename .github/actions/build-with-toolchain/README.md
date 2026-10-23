@@ -24,8 +24,9 @@ David C. Manuelda
 
 | Name                 | Required | Default     | Description |
 |----------------------|----------|-------------|-------------|
-| `toolchain`          | **Yes**  | —           | Toolchain to use: `gcc`, `clang`, `clang-libc++` (Linux/macOS) or `msvc` (Windows). |
+| `toolchain`          | **Yes**  | —           | Toolchain to use: `gcc`, `clang`, `clang-libc++` (Linux/macOS) or `msvc`, `clang-cl` (Windows). |
 | `ccache-key`         | No       | `""`        | Base cache key for ccache / sccache. Leave empty to disable compiler caching. |
+| `cache-scope`        | No       | `""`        | Extra namespace per matrix cell or parallel job. Set this when cells otherwise share the OS, toolchain, job ID and `ccache-key`. |
 | `buildmaster-datadir-cache-key` | No | `""` | Cache key for BuildMaster's data directory. Empty skips it. Non-empty restores that folder and passes it as `-DBUILDMASTER_DATADIR`. |
 | `build-dir`          | No       | `"build"`   | CMake build directory. |
 | `build-type`         | No       | `"Debug"`   | CMake build type (`Debug`, `Release`, …). |
@@ -59,9 +60,47 @@ The action:
 1. Restores the compiler cache (if any)
 2. Configures and builds with CMake + Ninja
 3. Prints cache statistics (hits / misses)
-4. Saves the updated cache **only after a successful build**
+4. Saves the updated cache after a build attempt, including useful objects from a failed build or when later tests fail. Cancelled jobs and Windows builds whose cache could not be flushed do not save it.
+5. Removes older snapshots **only on the current Git ref**, with the same cache version, and only after confirming the replacement exists in the cache API. Caches from other branches, PRs or tags, newer concurrent uploads, and other matrix scopes are preserved.
 
-On Windows, Debug builds use `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded` (`/Z7`) to avoid PDB race conditions when compiling in parallel through sccache.
+Cache keys include the OS, toolchain, `ccache-key`, job ID and optional `cache-scope`.
+Each snapshot adds the run ID and attempt. Restore first looks for the current
+snapshot, then earlier attempts of the run, then the latest matching snapshot
+visible to the current ref. GitHub's branch/tag cache visibility rules still apply:
+a release tag must not delete the default branch's snapshot just because it restored it.
+
+On Windows, Debug and RelWithDebInfo builds use
+`CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded` (`/Z7`) and default CMP0141 to NEW.
+This avoids the shared compiler PDB problem with sccache. Project policies,
+target-specific flags and `configure-options` can override these defaults; check
+the actual compile commands if sccache reports non-cacheable calls.
+
+The Windows server starts inside each compilation step (configure and build).
+It is stopped in that same step to finish cache writes before the step exits.
+Only the build prints sccache statistics, including when Ninja fails, before the
+server stops. Restore, configure, tests and install do not print empty or duplicate
+sccache statistics; tests do not start a server. The executable is installed under
+`${{ runner.temp }}/sccache-bin`, separately from the default cache directory
+`${{ runner.temp }}/sccache`. Old snapshots may still contain the previously bundled
+executable; changing `ccache-key` once creates a fresh namespace if desired.
+
+### Interpreting Windows performance
+
+- A restored archive is not a compiler cache hit. Check **Cache hits**, **Cache
+  misses**, **Non-cacheable calls**, read/write errors and their reasons in the
+  build statistics.
+- sccache 0.10.0's direct/preprocessor cache is implemented for GCC and Clang,
+  not the MSVC-style driver path used by `cl` and `clang-cl`. Even if the global
+  statistics say direct mode is enabled, Windows cache hits still incur
+  preprocessing and hashing overhead.
+- Linking (including LTO), configure, tool installation, downloads and tests are
+  not cached by the compiler cache. Compare the Ninja build time, not just the
+  entire composite action's duration.
+- A persistent VM may also reuse Ninja outputs and already-built dependencies.
+  Hosted runners start with a fresh build tree. Compiler/SDK updates, changed
+  flags, source paths or generated headers can also cause legitimate misses.
+- Dependencies built outside CMake's compiler launchers do not automatically
+  benefit from sccache. Check those build commands separately.
 
 ## Usage examples
 
@@ -179,16 +218,17 @@ jobs:
 
 ## Notes
 
-- Depends on `install-toolchain` (install + **restore** only).
+- Depends on `install-toolchain` for installation; compiler cache restore/save is managed here.
 - The **save** of the compiler cache happens in this action, after the build.
-- Calling workflows need `permissions: actions: write` so caches can be saved.
+- Calling workflows need `permissions: actions: write` for old-cache cleanup. Cache restore/save itself does not require that permission; read-only PR jobs may skip cleanup with a warning.
 - APT package caching is handled by the underlying `install-cached` action.
 - No dependency on `ashutoshvarma/action-cmake-build`; configure/build/test are done with plain `cmake` / `ctest`.
 
 ## External actions used
 
 - `stormbytepp/githubactions/.github/actions/install-toolchain`
-- `actions/cache/save@v4`
+- `actions/cache/restore@v6` and `actions/cache/save@v6`
+- `actions/github-script@v9`
 
 ## License
 
