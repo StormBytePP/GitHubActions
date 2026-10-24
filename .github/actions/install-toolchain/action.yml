@@ -13,7 +13,7 @@ inputs:
     description: "Install documentation tools (doxygen + graphviz). Linux & macOS only"
     default: "false"
   version:
-    description: "Optional major version for gcc/clang (default: 14 for gcc, 20 for clang). Ignored for Apple Clang on macOS and for msvc/clang-cl."
+    description: "Optional major version for gcc/clang (default: 16 for gcc, 22 for clang). Ignored for Apple Clang on macOS and for msvc/clang-cl."
     default: ""
   ccache-key:
     description: "Non-empty also installs ccache (Linux/macOS) or sccache (Windows). Empty = skip"
@@ -56,13 +56,13 @@ runs:
 
         case "$TOOLCHAIN" in
           gcc)
-            echo "GCC_VERSION=${VER:-14}" >> "$GITHUB_ENV"
-            echo "CLANG_VERSION=20" >> "$GITHUB_ENV"
+            echo "GCC_VERSION=${VER:-16}" >> "$GITHUB_ENV"
+            echo "CLANG_VERSION=22" >> "$GITHUB_ENV"
             echo "TOOLCHAIN_VERSION=${VER:-14}" >> "$GITHUB_ENV"
             ;;
           clang|clang-libc++)
-            echo "CLANG_VERSION=${VER:-20}" >> "$GITHUB_ENV"
-            echo "GCC_VERSION=14" >> "$GITHUB_ENV"
+            echo "CLANG_VERSION=${VER:-22}" >> "$GITHUB_ENV"
+            echo "GCC_VERSION=16" >> "$GITHUB_ENV"
             echo "TOOLCHAIN_VERSION=${VER:-20}" >> "$GITHUB_ENV"
             ;;
           msvc|clang-cl)
@@ -96,7 +96,7 @@ runs:
           ${{ inputs.toolchain == 'clang-libc++' && format('libc++-{0}-dev libc++abi-{0}-dev libunwind-{0}-dev', env.CLANG_VERSION) || '' }}
           ${{ inputs.ccache-key != '' && 'ccache' || '' }}
           ${{ inputs.docs == 'true' && 'doxygen graphviz' || '' }}
-        cache-key: apt-toolchain-${{ inputs.toolchain }}-${{ env.TOOLCHAIN_VERSION }}-v4
+        cache-key: apt-toolchain-${{ inputs.toolchain }}-${{ env.TOOLCHAIN_VERSION }}-v5
         unique: true
 
     - name: Register compiler alternatives (Linux)

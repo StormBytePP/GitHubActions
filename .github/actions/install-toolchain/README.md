@@ -32,7 +32,7 @@ David C. Manuelda
 | Name            | Required | Default | Description |
 |-----------------|----------|---------|-------------|
 | `toolchain`     | **Yes**  | —       | Toolchain to install.<br>Allowed values: `gcc`, `clang`, `clang-libc++` (Linux/macOS) or `msvc` (Windows). |
-| `version`       | No       | `""`    | Major version for `gcc` or `clang`.<br>Defaults: **14** (gcc) / **20** (clang). |
+| `version`       | No       | `""`    | Major version for `gcc` or `clang`.<br>Defaults: **16** (gcc) / **22** (clang). |
 | `docs`          | No       | `false` | Install documentation tools (`doxygen` + `graphviz`) on Linux and macOS. |
 | `ccache-key`    | No       | `""`    | Base cache key for **ccache** (Linux/macOS) or **BuildCache** (Windows).<br>Leave empty to disable compiler caching. |
 | `install-meson` | No       | `true`  | Install Meson 1.10.2 via `pip`. |
