@@ -73,9 +73,9 @@ test("keeps newer and equally old entries from concurrent runs", async () => {
   assert.deepEqual(result.deleted, [old.id]);
 });
 
-test("keeps cache versions for different paths or compression formats", async () => {
+test("deletes older caches even when the version (content hash) differs", async () => {
   const result = await run([current, { ...old, version: "different-version" }]);
-  assert.deepEqual(result.deleted, []);
+  assert.deepEqual(result.deleted, [old.id]);
 });
 
 test("does not delete matrix scopes whose keys share a prefix", async () => {

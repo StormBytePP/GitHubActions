@@ -20,7 +20,6 @@ module.exports = async function cleanup({ github, context, core }) {
   for (const cache of caches) {
     if (
       cache.ref === current.ref &&
-      cache.version === current.version &&
       cache.key.startsWith(keyPrefix) &&
       /^\d+-\d+$/.test(cache.key.slice(keyPrefix.length)) &&
       Date.parse(cache.created_at) < Date.parse(current.created_at)
