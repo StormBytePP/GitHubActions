@@ -61,7 +61,7 @@ The action:
 2. Configures and builds with CMake + Ninja
 3. Prints cache statistics (hits / misses)
 4. Saves the updated cache after a build attempt, including useful objects from a failed build or when later tests fail. Cancelled jobs and Windows builds whose cache could not be flushed do not save it.
-5. Removes older snapshots **only on the current Git ref**, with the same cache version, and only after confirming the replacement exists in the cache API. Caches from other branches, PRs or tags, newer concurrent uploads, and other matrix scopes are preserved.
+5. Removes older snapshots **only on the current Git ref**, and only after confirming the replacement exists in the cache API. Caches from other branches, PRs or tags, newer concurrent uploads, and other matrix scopes are preserved.
 
 Cache keys include the OS, toolchain, `ccache-key`, job ID and optional `cache-scope`.
 Each snapshot adds the run ID and attempt. Restore first looks for the current
