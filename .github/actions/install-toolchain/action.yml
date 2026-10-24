@@ -58,12 +58,12 @@ runs:
           gcc)
             echo "GCC_VERSION=${VER:-16}" >> "$GITHUB_ENV"
             echo "CLANG_VERSION=22" >> "$GITHUB_ENV"
-            echo "TOOLCHAIN_VERSION=${VER:-14}" >> "$GITHUB_ENV"
+            echo "TOOLCHAIN_VERSION=${VER:-16}" >> "$GITHUB_ENV"
             ;;
           clang|clang-libc++)
             echo "CLANG_VERSION=${VER:-22}" >> "$GITHUB_ENV"
             echo "GCC_VERSION=16" >> "$GITHUB_ENV"
-            echo "TOOLCHAIN_VERSION=${VER:-20}" >> "$GITHUB_ENV"
+            echo "TOOLCHAIN_VERSION=${VER:-22}" >> "$GITHUB_ENV"
             ;;
           msvc|clang-cl)
             if [[ "$OS" != "Windows" ]]; then
