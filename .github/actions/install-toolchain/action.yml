@@ -117,29 +117,36 @@ runs:
           command -v g++
           command -v ar
         else
+          # Prefer the exact requested LLVM. A higher priority and the
+          # versioned bin directory on PATH prevent mixing (e.g. clang-22
+          # with an older lld/llvm-ar that breaks LTO).
+          VER="${{ env.CLANG_VERSION }}"
+          LLVM_BIN="/usr/lib/llvm-${VER}/bin"
+          if [[ -d "$LLVM_BIN" ]]; then
+            echo "$LLVM_BIN" >> "$GITHUB_PATH"
+            echo "✅ Prepended $LLVM_BIN to PATH"
+          fi
+
           sudo update-alternatives --remove-all clang  || true
           sudo update-alternatives --remove-all clang++ || true
-          sudo update-alternatives --install /usr/bin/clang  clang  /usr/bin/clang-${{ env.CLANG_VERSION }}  200 \
-            --slave /usr/bin/clang++ clang++ /usr/bin/clang++-${{ env.CLANG_VERSION }}
+          sudo update-alternatives --install /usr/bin/clang  clang  /usr/bin/clang-${VER}  220 \
+            --slave /usr/bin/clang++ clang++ /usr/bin/clang++-${VER}
 
-          sudo update-alternatives --remove-all lld || true
-          sudo update-alternatives --remove-all ld.lld || true
-          sudo update-alternatives --install /usr/bin/lld lld /usr/bin/lld-${{ env.CLANG_VERSION }} 200
-          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-${{ env.CLANG_VERSION }} 200
+          for tool in lld ld.lld llvm-ar llvm-ranlib llvm-profdata llvm-lto llvm-link llvm-nm; do
+            sudo update-alternatives --remove-all "$tool" || true
+            if [[ -x "/usr/bin/${tool}-${VER}" ]]; then
+              sudo update-alternatives --install "/usr/bin/${tool}" "$tool" "/usr/bin/${tool}-${VER}" 220
+            elif [[ -x "${LLVM_BIN}/${tool}" ]]; then
+              sudo update-alternatives --install "/usr/bin/${tool}" "$tool" "${LLVM_BIN}/${tool}" 220
+            fi
+          done
 
-          sudo update-alternatives --remove-all llvm-ar || true
-          sudo update-alternatives --remove-all llvm-ranlib || true
-          sudo update-alternatives --install /usr/bin/llvm-ar llvm-ar /usr/bin/llvm-ar-${{ env.CLANG_VERSION }} 200
-          sudo update-alternatives --install /usr/bin/llvm-ranlib llvm-ranlib /usr/bin/llvm-ranlib-${{ env.CLANG_VERSION }} 200
-
-          sudo update-alternatives --remove-all llvm-profdata || true
-          sudo update-alternatives --install /usr/bin/llvm-profdata llvm-profdata /usr/bin/llvm-profdata-${{ env.CLANG_VERSION }} 200
-
-          echo "✅ Registered clang/clang++/lld/ld.lld/llvm-ar/llvm-ranlib/llvm-profdata ${{ env.CLANG_VERSION }}"
+          echo "✅ Registered clang/clang++ and LTO tools for LLVM ${VER}"
           command -v clang
           command -v clang++
-          command -v ld.lld
+          command -v ld.lld || true
           command -v llvm-ar
+          clang --version | head -n 1
           llvm-ar --version | head -n 1
         fi
 
