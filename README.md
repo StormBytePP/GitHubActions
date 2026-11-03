@@ -31,6 +31,11 @@ artifacts; other dynamic dependencies, including the selected C++ standard
 library, must also be available on the target system. The actions do not
 automatically bundle those system runtimes.
 
+The build action's `cpu-baseline: auto` targets `x86-64-v3` on Linux x64,
+`armv8.2-a` on Linux ARM64, Apple M1 on macOS ARM64, and AVX on Windows x64.
+It applies to the project and to every BuildMaster-managed dependency; the
+action does not change the optimization level.
+
 The build action installs common source-build tools and accepts
 platform-specific extra packages. Alpine builds run as the runner user with
 host networking for local test services; their packages and environment are

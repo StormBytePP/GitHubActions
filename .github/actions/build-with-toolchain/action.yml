@@ -86,6 +86,15 @@ inputs:
     required: false
     default: ""
 
+  cpu-baseline:
+    description: >
+      Target CPU flags for C/C++ (also inherited by BuildMaster dependencies).
+      auto: Linux x64 -march=x86-64-v3, Linux ARM64 -march=armv8.2-a,
+      macOS ARM64 -mcpu=apple-m1, Windows x64 /arch:AVX. none adds nothing.
+      Any other value is used verbatim.
+    required: false
+    default: "auto"
+
   deploy:
     description: "Install and upload a ZIP to the existing GitHub release for this tag."
     required: false
@@ -225,6 +234,7 @@ runs:
         INPUT_LIBC: ${{ inputs.libc }}
         INPUT_PGO: ${{ inputs.pgo }}
         INPUT_LTO: ${{ inputs.lto }}
+        INPUT_CPU_BASELINE: ${{ inputs.cpu-baseline }}
         INPUT_DEPLOY: ${{ inputs.deploy }}
         REF_TYPE: ${{ github.ref_type }}
         RUNNER_OS: ${{ runner.os }}
@@ -340,12 +350,35 @@ runs:
           echo "::error::deploy=true requires a tag ref"
           exit 1
         fi
-        for value in "$compiler_version" "$compiler_cache_key" "$compiler_cache_scope" "$buildmaster_cache_key" "$build_target" "$ctest" "$install_prefix" "$meson" "$pgo" "$lto" "$deploy"; do
+        for value in "$compiler_version" "$compiler_cache_key" "$compiler_cache_scope" "$buildmaster_cache_key" "$build_target" "$ctest" "$install_prefix" "$meson" "$pgo" "$lto" "$deploy" "$INPUT_CPU_BASELINE"; do
           if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
             echo "::error::Single-line action inputs cannot contain line breaks"
             exit 1
           fi
         done
+
+        cpu_baseline="$(printf '%s' "$INPUT_CPU_BASELINE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        case "$cpu_baseline" in
+          ""|auto)
+            case "${RUNNER_OS}-${RUNNER_ARCH}" in
+              Linux-X64) cpu_flags="-march=x86-64-v3" ;;
+              Linux-ARM64) cpu_flags="-march=armv8.2-a" ;;
+              macOS-ARM64) cpu_flags="-mcpu=apple-m1" ;;
+              Windows-X64) cpu_flags="/arch:AVX" ;;
+              *)
+                echo "::error::cpu-baseline=auto has no default for ${RUNNER_OS} ${RUNNER_ARCH}; set it explicitly or use none"
+                exit 1
+                ;;
+            esac
+            ;;
+          none) cpu_flags="" ;;
+          *) cpu_flags="$cpu_baseline" ;;
+        esac
+        if [[ -n "$cpu_flags" && ! "$cpu_flags" =~ (^|[[:space:]])(-march=|-mcpu=|[/-]arch:) ]]; then
+          echo "::error::cpu-baseline must select a target CPU with -march=, -mcpu= or /arch: (received '$cpu_flags')"
+          exit 1
+        fi
+        echo "🎯 cpu-baseline=${cpu_baseline:-auto} → ${cpu_flags:-<none>}"
 
         {
           echo "compiler=$compiler"
@@ -365,6 +398,7 @@ runs:
           echo "meson=$meson"
           echo "pgo=$pgo"
           echo "lto=$lto"
+          echo "cpu_flags=$cpu_flags"
           echo "deploy=$deploy"
         } >> "$GITHUB_OUTPUT"
 
@@ -384,6 +418,7 @@ runs:
         BUILD_TYPE: ${{ inputs.build-type }}
         PGO: ${{ steps.options.outputs.pgo }}
         LTO: ${{ steps.options.outputs.lto }}
+        CPU_FLAGS: ${{ steps.options.outputs.cpu_flags }}
         CACHE_NAMESPACE: ${{ steps.options.outputs.compiler_cache_key }}
         CACHE_SCOPE: ${{ steps.options.outputs.compiler_cache_scope }}
       run: |
@@ -443,7 +478,7 @@ runs:
           KEY="${KEY}-${SCOPE_S}"
         fi
         IDENTITY="$(cache_identity_hash "$OS" "$ARCH" "$LIBC" "$COMPILER" "$COMPILER_VERSION" \
-          "$CXX_STDLIB" "$BUILD_TYPE" "$PGO" "$LTO" "$SUFFIX" "$JOB" "$SCOPE")"
+          "$CXX_STDLIB" "$BUILD_TYPE" "$PGO" "$LTO" "$SUFFIX" "$JOB" "$SCOPE" "cpu=${CPU_FLAGS:-}")"
         KEY="${KEY}-${IDENTITY}"
 
         SAVE_KEY="${KEY}--${{ github.run_id }}-${{ github.run_attempt }}"
@@ -475,6 +510,7 @@ runs:
         BUILD_TYPE: ${{ inputs.build-type }}
         PGO: ${{ steps.options.outputs.pgo }}
         LTO: ${{ steps.options.outputs.lto }}
+        CPU_FLAGS: ${{ steps.options.outputs.cpu_flags }}
         CACHE_SCOPE: ${{ steps.options.outputs.compiler_cache_scope }}
         JOB_NAME: ${{ github.job }}
       run: |
@@ -505,7 +541,7 @@ runs:
         KEY_S="${KEY_S}-${{ runner.os }}-${ARCH}-${LIBC_S}-${COMPILER_S}-${VERSION_S}-${STDLIB_S}-${TYPE_S}-pgo-${PGO_S}-lto-${LTO_S}-${JOB_S}"
         if [ -n "$SCOPE_S" ]; then KEY_S="${KEY_S}-${SCOPE_S}"; fi
         IDENTITY="$(cache_identity_hash "${{ runner.os }}" "$ARCH" "$LIBC" "$COMPILER" \
-          "$COMPILER_VERSION" "$CXX_STDLIB" "$BUILD_TYPE" "$PGO" "$LTO" "$KEY" "$JOB_NAME" "$CACHE_SCOPE")"
+          "$COMPILER_VERSION" "$CXX_STDLIB" "$BUILD_TYPE" "$PGO" "$LTO" "$KEY" "$JOB_NAME" "$CACHE_SCOPE" "cpu=${CPU_FLAGS:-}")"
         KEY_S="${KEY_S}-${IDENTITY}"
         SAVE_KEY="${KEY_S}--${{ github.run_id }}-${{ github.run_attempt }}"
         if [ "${#SAVE_KEY}" -gt 512 ]; then
@@ -905,6 +941,7 @@ runs:
         LTO: ${{ steps.options.outputs.lto }}
         INSTALL_PREFIX: ${{ steps.options.outputs.install_prefix }}
         CXX_STDLIB: ${{ steps.options.outputs.cxx_stdlib }}
+        CPU_FLAGS: ${{ steps.options.outputs.cpu_flags }}
       run: |
         set -euo pipefail
 
@@ -969,6 +1006,7 @@ runs:
         CONFIGURE_OPTIONS: ${{ steps.options.outputs.cmake_options }}
         PGO: ${{ steps.options.outputs.pgo }}
         LTO: ${{ steps.options.outputs.lto }}
+        CPU_FLAGS: ${{ steps.options.outputs.cpu_flags }}
         INSTALL_PREFIX: ${{ steps.options.outputs.install_prefix }}
       run: |
         $ErrorActionPreference = "Stop"
@@ -1045,6 +1083,39 @@ runs:
             $cmakeArgs.Add("-D$option=$desired")
           }
         }
+
+        # CMake prepends CFLAGS/CXXFLAGS to its MSVC defaults (/DWIN32 /EHsc ...),
+        # so the baseline goes through the environment unless -DCMAKE_<LANG>_FLAGS overrides it.
+        if (-not [string]::IsNullOrWhiteSpace($env:CPU_FLAGS)) {
+          $cpuPattern = '(^|\s)(-march=|-mcpu=|[/-]arch:)'
+          $cpuSource = $null
+          if ("$env:CFLAGS" -match $cpuPattern) { $cpuSource = "CFLAGS" }
+          elseif ("$env:CXXFLAGS" -match $cpuPattern) { $cpuSource = "CXXFLAGS" }
+          else {
+            foreach ($arg in $extraArgs) {
+              if ($arg -match '^-D(CMAKE_(?:C|CXX)_FLAGS(?:_[A-Za-z]+)?)(?::[^=]+)?=(.*)$' -and $Matches[2] -match $cpuPattern) {
+                $cpuSource = $Matches[1]
+                break
+              }
+            }
+          }
+          if ($cpuSource) {
+            Write-Host "::warning::$cpuSource already selects a target CPU; cpu-baseline ($env:CPU_FLAGS) was not applied"
+          } else {
+            foreach ($name in @("CFLAGS", "CXXFLAGS")) {
+              $current = [Environment]::GetEnvironmentVariable($name)
+              $merged = if ([string]::IsNullOrWhiteSpace($current)) { $env:CPU_FLAGS } else { "$current $($env:CPU_FLAGS)" }
+              [Environment]::SetEnvironmentVariable($name, $merged)
+            }
+            for ($i = 0; $i -lt $extraArgs.Count; $i++) {
+              if ($extraArgs[$i] -match '^-DCMAKE_(?:C|CXX)_FLAGS(?::[^=]+)?=(.*)$') {
+                $extraArgs[$i] = if ($Matches[1] -eq "") { "$($extraArgs[$i])$($env:CPU_FLAGS)" } else { "$($extraArgs[$i]) $($env:CPU_FLAGS)" }
+              }
+            }
+            Write-Host "🎯 CPU baseline: $env:CPU_FLAGS"
+          }
+        }
+
         $mtCmd = Get-Command mt.exe -ErrorAction SilentlyContinue
         $mtExe = if ($mtCmd) { ($mtCmd.Source -replace '\\', '/') } else { "mt" }
         $cmakeArgs.Add("-DCMAKE_MT=$mtExe")
@@ -1298,6 +1369,7 @@ runs:
         DEPLOY: ${{ steps.options.outputs.deploy }}
         PGO: ${{ steps.options.outputs.pgo }}
         LTO: ${{ steps.options.outputs.lto }}
+        CPU_FLAGS: ${{ steps.options.outputs.cpu_flags }}
         DOCS: ${{ inputs.docs }}
         MESON: ${{ steps.options.outputs.meson }}
         EXTRA_PACKAGES: ${{ inputs.extra-packages }}
@@ -1368,7 +1440,7 @@ runs:
             exit 1
           fi
           case "$name" in
-            ACTION_PATH|BUILDMASTER_DATADIR|BUILD_DIR|BUILD_GID|BUILD_TARGET|BUILD_TYPE|BUILD_UID|CACHE_ENABLED|CCACHE_DIR|CMAKE_OPTIONS|COMPILER|COMPILER_VERSION|CONTAINER_ENV|CTEST_ENABLED|CTEST_OPTIONS|CXX_STDLIB|DEPLOY|DOCS|EXTRA_PACKAGES|GITHUB_WORKSPACE|HOME|INSTALL_ENABLED|INSTALL_PREFIX|LTO|MESON|PATH|PGO|RUNNER_TEMP|SOURCE_DIR)
+            ACTION_PATH|BUILDMASTER_DATADIR|BUILD_DIR|BUILD_GID|BUILD_TARGET|BUILD_TYPE|BUILD_UID|CACHE_ENABLED|CCACHE_DIR|CMAKE_OPTIONS|COMPILER|COMPILER_VERSION|CONTAINER_ENV|CPU_FLAGS|CTEST_ENABLED|CTEST_OPTIONS|CXX_STDLIB|DEPLOY|DOCS|EXTRA_PACKAGES|GITHUB_WORKSPACE|HOME|INSTALL_ENABLED|INSTALL_PREFIX|LTO|MESON|PATH|PGO|RUNNER_TEMP|SOURCE_DIR)
               echo "::error::container-env cannot override the action's $name setting"
               exit 1
               ;;
@@ -1394,7 +1466,7 @@ runs:
           -e COMPILER -e COMPILER_VERSION -e CXX_STDLIB \
           -e CMAKE_OPTIONS -e BUILD_TYPE -e SOURCE_DIR -e BUILD_DIR \
           -e BUILD_TARGET -e CTEST_ENABLED -e CTEST_OPTIONS \
-          -e INSTALL_ENABLED -e INSTALL_PREFIX -e DEPLOY -e PGO -e LTO \
+          -e INSTALL_ENABLED -e INSTALL_PREFIX -e DEPLOY -e PGO -e LTO -e CPU_FLAGS \
           -e DOCS -e MESON -e EXTRA_PACKAGES -e CACHE_ENABLED -e CCACHE_DIR="$CACHEDIR" \
           -e BUILDMASTER_DATADIR -e RUNNER_TEMP -e GITHUB_WORKSPACE \
           "${docker_env[@]}" \

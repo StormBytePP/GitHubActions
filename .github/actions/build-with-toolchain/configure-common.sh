@@ -24,6 +24,54 @@ for arg in args:
   fi
 }
 
+CPU_FLAG_PATTERN='(^|[[:space:]])(-march=|-mcpu=|[/-]arch:)'
+
+# Appends CPU_FLAGS to CFLAGS/CXXFLAGS and to any CMAKE_C/CXX_FLAGS definition,
+# unless the caller already selects a target CPU.
+apply_cpu_baseline() {
+  local arg name source
+  local -a adjusted
+
+  [[ -z "${CPU_FLAGS:-}" ]] && return 0
+
+  source=""
+  if [[ "${CFLAGS:-}" =~ $CPU_FLAG_PATTERN ]]; then
+    source="CFLAGS"
+  elif [[ "${CXXFLAGS:-}" =~ $CPU_FLAG_PATTERN ]]; then
+    source="CXXFLAGS"
+  else
+    for arg in ${CONFIGURE_ARGS[@]+"${CONFIGURE_ARGS[@]}"}; do
+      if [[ "$arg" =~ ^-D(CMAKE_(C|CXX)_FLAGS(_[A-Za-z]+)?)(:[^=]+)?=(.*)$ ]]; then
+        name="${BASH_REMATCH[1]}"
+        if [[ "${BASH_REMATCH[5]}" =~ $CPU_FLAG_PATTERN ]]; then
+          source="$name"
+          break
+        fi
+      fi
+    done
+  fi
+  if [[ -n "$source" ]]; then
+    echo "::warning::${source} already selects a target CPU; cpu-baseline (${CPU_FLAGS}) was not applied" >&2
+    return 0
+  fi
+
+  export CFLAGS="${CFLAGS:+${CFLAGS} }${CPU_FLAGS}"
+  export CXXFLAGS="${CXXFLAGS:+${CXXFLAGS} }${CPU_FLAGS}"
+  adjusted=()
+  for arg in ${CONFIGURE_ARGS[@]+"${CONFIGURE_ARGS[@]}"}; do
+    if [[ "$arg" =~ ^-DCMAKE_(C|CXX)_FLAGS(:[^=]+)?=(.*)$ ]]; then
+      if [[ -n "${BASH_REMATCH[3]}" ]]; then
+        arg="${arg} ${CPU_FLAGS}"
+      else
+        arg="${arg}${CPU_FLAGS}"
+      fi
+    fi
+    adjusted+=("$arg")
+  done
+  CONFIGURE_ARGS=(${adjusted[@]+"${adjusted[@]}"})
+  echo "🎯 CPU baseline: ${CPU_FLAGS}" >&2
+}
+
 prepare_cmake_options() {
   local setting value desired option existing present normalized actual arg
   local name found stdlib_flag pending_definition
@@ -85,6 +133,8 @@ prepare_cmake_options() {
   if [[ -n "$INSTALL_PREFIX" ]]; then
     CONFIGURE_ARGS+=("-DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX}")
   fi
+
+  apply_cpu_baseline
 
   if [[ "$COMPILER" == clang && -n "$CXX_STDLIB" ]]; then
     stdlib_flag="-stdlib=${CXX_STDLIB}"

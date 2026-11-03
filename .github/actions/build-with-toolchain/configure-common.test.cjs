@@ -8,7 +8,9 @@ const defaults = {
   CMAKE_OPTIONS: "",
   COMPILER: "gcc",
   CXX_STDLIB: "libstdc++",
+  CFLAGS: "",
   CXXFLAGS: "",
+  CPU_FLAGS: "",
   PGO: "",
   LTO: "",
   INSTALL_PREFIX: ""
@@ -18,6 +20,19 @@ function run(functionName, overrides = {}) {
   const script = [
     'source "$1"',
     functionName,
+    'for arg in "${CONFIGURE_ARGS[@]}"; do printf "%s\\0" "$arg"; done'
+  ].join("\n");
+  return spawnSync("bash", ["-euo", "pipefail", "-c", script, "test", helper], {
+    env: { ...process.env, ...defaults, ...overrides },
+    encoding: "utf8"
+  });
+}
+
+function runWithFlags(overrides = {}) {
+  const script = [
+    'source "$1"',
+    "prepare_cmake_options",
+    'printf "CFLAGS=%s\\0CXXFLAGS=%s\\0" "$CFLAGS" "$CXXFLAGS"',
     'for arg in "${CONFIGURE_ARGS[@]}"; do printf "%s\\0" "$arg"; done'
   ].join("\n");
   return spawnSync("bash", ["-euo", "pipefail", "-c", script, "test", helper], {
@@ -147,4 +162,47 @@ test("the shared parser preserves quoted CTest arguments", () => {
     { CTEST_OPTIONS: '--output-on-failure -R "test name"' }
   );
   assert.deepEqual(args(result), ["--output-on-failure", "-R", "test name"]);
+});
+
+test("cpu-baseline is appended to CFLAGS, CXXFLAGS and explicit CMake flags", () => {
+  const plain = runWithFlags({ CPU_FLAGS: "-march=x86-64-v3", CFLAGS: "-pipe" });
+  assert.deepEqual(args(plain), ["CFLAGS=-pipe -march=x86-64-v3", "CXXFLAGS=-march=x86-64-v3"]);
+  assert.match(plain.stderr, /CPU baseline: -march=x86-64-v3/);
+
+  const explicit = runWithFlags({
+    CPU_FLAGS: "-march=armv8.2-a",
+    COMPILER: "clang",
+    CXX_STDLIB: "libc++",
+    CMAKE_OPTIONS: '-DCMAKE_C_FLAGS:STRING="-g" -DCMAKE_CXX_FLAGS= -DCMAKE_C_FLAGS_RELEASE=-O2'
+  });
+  assert.deepEqual(args(explicit), [
+    "CFLAGS=-march=armv8.2-a",
+    "CXXFLAGS=-march=armv8.2-a -stdlib=libc++",
+    "-DCMAKE_C_FLAGS:STRING=-g -march=armv8.2-a",
+    "-DCMAKE_CXX_FLAGS=-march=armv8.2-a -stdlib=libc++",
+    "-DCMAKE_C_FLAGS_RELEASE=-O2",
+    "-DCMAKE_CXX_STANDARD_LIBRARIES=-stdlib=libc++"
+  ]);
+
+  const implicit = runWithFlags({ CPU_FLAGS: "-march=x86-64-v3", COMPILER: "clang", CXX_STDLIB: "libc++" });
+  assert.ok(args(implicit).includes("-DCMAKE_CXX_FLAGS=-march=x86-64-v3 -stdlib=libc++"));
+});
+
+test("an explicit CPU selection disables cpu-baseline with a warning", () => {
+  for (const overrides of [
+    { CFLAGS: "-march=native" },
+    { CXXFLAGS: "-mcpu=neoverse-n1" },
+    { CMAKE_OPTIONS: "-DCMAKE_CXX_FLAGS_RELEASE=-march=znver4" },
+    { CMAKE_OPTIONS: '-D CMAKE_C_FLAGS="/arch:AVX2"' }
+  ]) {
+    const result = runWithFlags({ CPU_FLAGS: "-march=x86-64-v3", ...overrides });
+    const values = args(result);
+    assert.ok(!values.some(value => value.includes("x86-64-v3")), values.join(" | "));
+    assert.match(result.stderr, /::warning::.*already selects a target CPU/);
+  }
+});
+
+test("empty cpu-baseline leaves flags untouched", () => {
+  const result = runWithFlags({ CFLAGS: "-pipe", CMAKE_OPTIONS: "-DCMAKE_C_FLAGS=-g" });
+  assert.deepEqual(args(result), ["CFLAGS=-pipe", "CXXFLAGS=", "-DCMAKE_C_FLAGS=-g"]);
 });

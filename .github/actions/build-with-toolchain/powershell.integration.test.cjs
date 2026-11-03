@@ -36,6 +36,8 @@ test("PowerShell configure and CTest preserve argument arrays and Windows paths"
 import json, os, sys
 with open(os.environ["CAPTURE_FILE"], "w", encoding="utf-8") as output:
     json.dump(sys.argv[1:], output)
+with open(os.environ["CAPTURE_FILE"] + ".env", "w", encoding="utf-8") as output:
+    json.dump({name: os.environ.get(name, "") for name in ("CFLAGS", "CXXFLAGS")}, output)
 `;
     fs.writeFileSync(path.join(bin, "cmake"), stub, { mode: 0o755 });
     fs.writeFileSync(path.join(bin, "ctest"), stub, { mode: 0o755 });
@@ -50,6 +52,8 @@ export CAPTURE_FILE="$TEST_ROOT/configure.json"
 pwsh -NoLogo -NoProfile -File "$TEST_ROOT/configure.ps1" > "$TEST_ROOT/configure.log" 2>&1
 export CAPTURE_FILE="$TEST_ROOT/ctest.json"
 pwsh -NoLogo -NoProfile -File "$TEST_ROOT/ctest.ps1" > "$TEST_ROOT/ctest.log" 2>&1
+export CAPTURE_FILE="$TEST_ROOT/explicit-cpu.json"
+CFLAGS="/arch:AVX2" pwsh -NoLogo -NoProfile -File "$TEST_ROOT/configure.ps1" > "$TEST_ROOT/explicit-cpu.log" 2>&1
 export CONFIGURE_OPTIONS="-D ENABLE_PGO=OFF" PGO=true
 if pwsh -NoLogo -NoProfile -File "$TEST_ROOT/configure.ps1" > "$TEST_ROOT/conflict.log" 2>&1; then
   echo "PGO conflict was not rejected" >&2
@@ -65,13 +69,14 @@ fi
       ...process.env,
       TEST_ROOT: root, TEST_BIN: bin, GITHUB_ENV: path.join(root, "github-env"),
       ACTION_PATH: __dirname,
-      CONFIGURE_OPTIONS: '-DNAME="quoted spaces" -DPREFIX=C:\\Library\\include -DQUOTED="C:\\Program Files\\SDK" -D ENABLE_PGO:BOOL=YES -D ENABLE_LTO=OFF',
+      CONFIGURE_OPTIONS: '-DNAME="quoted spaces" -DPREFIX=C:\\Library\\include -DQUOTED="C:\\Program Files\\SDK" -D ENABLE_PGO:BOOL=YES -D ENABLE_LTO=OFF -D CMAKE_CXX_FLAGS="/W4"',
       CTEST_OPTIONS: '--output-on-failure -R "probe test" -E "bad pattern"',
       PGO: "true", LTO: "false",
+      CPU_FLAGS: "/arch:AVX", CFLAGS: "/nologo",
       INSTALL_PREFIX: "C:\\Install Dir", BUILDMASTER_DATADIR: "C:\\BuildMaster"
     };
     const dockerEnv = ["TEST_ROOT", "TEST_BIN", "GITHUB_ENV", "CONFIGURE_OPTIONS",
-      "CTEST_OPTIONS", "PGO", "LTO", "INSTALL_PREFIX", "BUILDMASTER_DATADIR", "ACTION_PATH"];
+      "CTEST_OPTIONS", "PGO", "LTO", "CPU_FLAGS", "CFLAGS", "INSTALL_PREFIX", "BUILDMASTER_DATADIR", "ACTION_PATH"];
     const args = ["run", "--rm", "--network", "host", "-v", `${root}:${root}`,
       "-v", `${__dirname}:${__dirname}:ro`, "-w", root];
     for (const name of dockerEnv) args.push("-e", name);
@@ -90,11 +95,20 @@ fi
       "-S", "C:/project source", "-B", "C:/project build",
       "-DNAME=quoted spaces", "-DPREFIX=C:\\Library\\include",
       "-DQUOTED=C:\\Program Files\\SDK", "-DENABLE_PGO:BOOL=YES", "-DENABLE_LTO=OFF",
-      "-DBUILDMASTER_DATADIR=C:/BuildMaster", "-DCMAKE_INSTALL_PREFIX=C:\\Install Dir"
+      "-DBUILDMASTER_DATADIR=C:/BuildMaster", "-DCMAKE_INSTALL_PREFIX=C:\\Install Dir",
+      "-DCMAKE_CXX_FLAGS=/W4 /arch:AVX"
     ]) assert.ok(configured.includes(expected), `Missing argument ${expected}: ${JSON.stringify(configured)}`);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, "ctest.json"), "utf8")), [
       "--test-dir", "C:/project build", "--output-on-failure", "-R", "probe test", "-E", "bad pattern"
     ]);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, "configure.json.env"), "utf8")),
+      { CFLAGS: "/nologo /arch:AVX", CXXFLAGS: "/arch:AVX" });
+    assert.match(log("configure.log"), /CPU baseline: \/arch:AVX/);
+    const explicitCpu = JSON.parse(fs.readFileSync(path.join(root, "explicit-cpu.json"), "utf8"));
+    assert.ok(explicitCpu.includes("-DCMAKE_CXX_FLAGS=/W4"), JSON.stringify(explicitCpu));
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root, "explicit-cpu.json.env"), "utf8")),
+      { CFLAGS: "/arch:AVX2", CXXFLAGS: "" });
+    assert.match(log("explicit-cpu.log"), /::warning::CFLAGS already selects a target CPU/);
     assert.match(log("conflict.log"), /conflicts/);
     assert.match(log("quoting.log"), /Invalid cmake-options/);
   } finally {

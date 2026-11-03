@@ -19,6 +19,7 @@ test("Ubuntu toolchain, build and documentation steps work together", {
 }, () => {
   const arch = { x64: "X64", arm64: "ARM64" }[process.arch];
   assert.ok(arch, `Unsupported native architecture: ${process.arch}`);
+  const cpuFlags = { x64: "-march=x86-64-v3", arm64: "-march=armv8.2-a" }[process.arch];
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "stormbyte-ubuntu-test-"));
   const workspace = path.join(root, "workspace");
   fs.mkdirSync(workspace);
@@ -102,7 +103,7 @@ fi
 export PATH="$TEST_ROOT/bin:$PATH" GCC_VERSION=16 CLANG_VERSION=22
 export GITHUB_PATH="$TEST_ROOT/github-path" GITHUB_ENV="$TEST_ROOT/github-env"
 export ACTION_PATH="$ACTION_DIR" CMAKE_OPTIONS='-DPROBE_QUOTED="hello world"'
-export BUILDMASTER_DATADIR="" PGO=true LTO=true
+export BUILDMASTER_DATADIR="" PGO=true LTO=true CPU_FLAGS="$TEST_CPU_FLAGS"
 cd "$TEST_WORKSPACE"
 bash "$TEST_ROOT/gcc-alternatives.sh"
 export COMPILER=gcc CXX_STDLIB=libstdc++ INSTALL_PREFIX="$TEST_WORKSPACE/install-gcc"
@@ -138,11 +139,12 @@ bash "$TEST_ROOT/build-docs.sh"
       TEST_ROOT: root, TEST_WORKSPACE: workspace,
       TEST_UID: String(process.getuid()), TEST_GID: String(process.getgid()),
       ACTION_DIR: __dirname, DOCS_DIR: path.join(actions, "generate-doc"),
-      ACTUAL_PGO: actualPgo ? "true" : "false"
+      ACTUAL_PGO: actualPgo ? "true" : "false",
+      TEST_CPU_FLAGS: cpuFlags
     };
     const args = ["run", "--rm", "--network", "host", "-v", `${root}:${root}`,
       "-v", `${actions}:${actions}:ro`, "-w", workspace];
-    for (const name of ["TEST_ROOT", "TEST_WORKSPACE", "TEST_UID", "TEST_GID", "ACTION_DIR", "DOCS_DIR", "ACTUAL_PGO"]) {
+    for (const name of ["TEST_ROOT", "TEST_WORKSPACE", "TEST_UID", "TEST_GID", "ACTION_DIR", "DOCS_DIR", "ACTUAL_PGO", "TEST_CPU_FLAGS"]) {
       args.push("-e", name);
     }
     args.push("--entrypoint", "/bin/bash", "ubuntu:26.04", path.join(root, "run.sh"));
@@ -154,6 +156,10 @@ bash "$TEST_ROOT/build-docs.sh"
     for (const name of ["gcc", "clang-stdcxx", "clang-cxx"]) {
       assert.equal(fs.existsSync(path.join(workspace, `install-${name}`, "lib", "libprobe.so")), true);
       if (actualPgo) assert.equal(fs.existsSync(path.join(workspace, `build-${name}`, "pgo-data")), true);
+      const cache = fs.readFileSync(path.join(workspace, `build-${name}`, "CMakeCache.txt"), "utf8");
+      for (const lang of ["C", "CXX"]) {
+        assert.match(cache, new RegExp(`^CMAKE_${lang}_FLAGS:STRING=.*${cpuFlags}`, "m"), `${name} ${lang}`);
+      }
     }
     assert.equal(fs.existsSync(path.join(workspace, "build", "docs-built")), true);
   } finally {

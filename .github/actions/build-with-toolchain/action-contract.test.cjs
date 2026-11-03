@@ -68,6 +68,7 @@ function resolveOptions(f, overrides = {}) {
     INPUT_LIBC: "glibc",
     INPUT_PGO: "",
     INPUT_LTO: "",
+    INPUT_CPU_BASELINE: "auto",
     INPUT_DEPLOY: "false",
     REF_TYPE: "branch",
     RUNNER_OS: "Linux",
@@ -97,6 +98,40 @@ test("legacy aliases work and explicit canonical values take precedence", () => 
   const legacy = resolveOptions(f, { INPUT_COMPILER: "gcc", INPUT_CTEST_LEGACY: "true" });
   assert.equal(legacy.result.status, 0, legacy.result.stderr);
   assert.equal(legacy.values.ctest, "true");
+}));
+
+test("cpu-baseline auto resolves per platform and accepts none or custom flags", () => fixture(f => {
+  for (const [os, arch, compiler, expected] of [
+    ["Linux", "X64", "gcc", "-march=x86-64-v3"],
+    ["Linux", "ARM64", "clang", "-march=armv8.2-a"],
+    ["macOS", "ARM64", "clang", "-mcpu=apple-m1"],
+    ["Windows", "X64", "msvc", "/arch:AVX"]
+  ]) {
+    const { result, values } = resolveOptions(f, { INPUT_COMPILER: compiler, RUNNER_OS: os, RUNNER_ARCH: arch });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(values.cpu_flags, expected);
+  }
+  const musl = resolveOptions(f, { INPUT_COMPILER: "gcc", INPUT_LIBC: "musl", RUNNER_ARCH: "ARM64" });
+  assert.equal(musl.values.cpu_flags, "-march=armv8.2-a");
+  const empty = resolveOptions(f, { INPUT_COMPILER: "gcc", INPUT_CPU_BASELINE: "" });
+  assert.equal(empty.values.cpu_flags, "-march=x86-64-v3");
+  const none = resolveOptions(f, { INPUT_COMPILER: "gcc", INPUT_CPU_BASELINE: "none" });
+  assert.equal(none.result.status, 0, none.result.stderr);
+  assert.equal(none.values.cpu_flags, "");
+  const custom = resolveOptions(f, { INPUT_COMPILER: "gcc", INPUT_CPU_BASELINE: " -march=x86-64-v2 -mtune=generic " });
+  assert.equal(custom.values.cpu_flags, "-march=x86-64-v2 -mtune=generic");
+}));
+
+test("cpu-baseline rejects values without a CPU selector and unknown auto platforms", () => fixture(f => {
+  for (const overrides of [
+    { INPUT_COMPILER: "gcc", INPUT_CPU_BASELINE: "-O3" },
+    { INPUT_COMPILER: "gcc", INPUT_CPU_BASELINE: "-march=x86-64\n-O3" },
+    { INPUT_COMPILER: "clang", RUNNER_OS: "macOS", RUNNER_ARCH: "X64" }
+  ]) {
+    const { result } = resolveOptions(f, overrides);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout + result.stderr, /::error::/);
+  }
 }));
 
 test("Clang with libstdc++ remains Clang", () => fixture(f => {

@@ -16,6 +16,7 @@ test("Alpine builds and installs all compiler/runtime variants", {
 }, async t => {
   const arch = { x64: ["X64", "amd64"], arm64: ["ARM64", "arm64"] }[process.arch];
   assert.ok(arch, `Unsupported native architecture: ${process.arch}`);
+  const cpuFlags = { x64: "-march=x86-64-v3", arm64: "-march=armv8.2-a" }[process.arch];
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "stormbyte-alpine-test-"));
   const workspace = path.join(root, "workspace");
   const temp = path.join(root, "runner-temp");
@@ -148,7 +149,7 @@ exec "$1"
         CTEST_ENABLED: variant.pgo && actualPgo ? "false" : "true",
         CTEST_OPTIONS: '--output-on-failure -R "probe test"',
         INSTALL_ENABLED: String(variant.install !== false), INSTALL_PREFIX: installDir, DEPLOY: "false",
-        PGO: String(variant.pgo), LTO: String(variant.pgo),
+        PGO: String(variant.pgo), LTO: String(variant.pgo), CPU_FLAGS: cpuFlags,
         DOCS: String(variant.docs === true), MESON: String(variant.meson === true),
         EXTRA_PACKAGES: "sqlite-dev", CONTAINER_ENV: "ACTION_TEST_ENV EXPECTED_STDLIB",
         CACHE_ENABLED: "true", BUILDMASTER_DATADIR: datadir,
@@ -162,6 +163,10 @@ exec "$1"
       assert.equal(result.status, 0,
         `${variant.name} failed: ${result.error || ""}\n${result.stdout.slice(-12000)}\n${result.stderr.slice(-4000)}`);
       assert.equal(fs.existsSync(path.join(datadir, "tmp")), false);
+      const flagsCache = fs.readFileSync(path.join(workspace, buildDir, "CMakeCache.txt"), "utf8");
+      for (const lang of ["C", "CXX"]) {
+        assert.match(flagsCache, new RegExp(`^CMAKE_${lang}_FLAGS:STRING=.*${cpuFlags}`, "m"), `${variant.name} ${lang}`);
+      }
       if (variant.install === false) {
         const cache = fs.readFileSync(path.join(workspace, buildDir, "CMakeCache.txt"), "utf8");
         assert.match(cache, /CMAKE_INSTALL_PREFIX:PATH=\/usr\/local\/configuration-only/);

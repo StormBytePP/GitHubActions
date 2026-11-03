@@ -31,6 +31,7 @@ upload an installed package to an existing GitHub tag release.
 | `container-env` | `""` | Additional host environment variable **names** to pass into Alpine, separated by whitespace. |
 | `pgo` | unchanged | `true`/`false` sets `ENABLE_PGO=ON/OFF`. Empty leaves the CMake option unchanged. |
 | `lto` | unchanged | `true`/`false` sets `ENABLE_LTO=ON/OFF`. Empty leaves the CMake option unchanged. |
+| `cpu-baseline` | `auto` | Target CPU flags for C and C++. `auto` selects the StormByte baseline below; `none` adds nothing; any other value is used verbatim and must contain `-march=`, `-mcpu=`, or `/arch:`. |
 
 `pgo` or `lto` fails early if `cmake-options` sets the same option to the
 opposite value. These inputs are intended for projects that define
@@ -43,6 +44,37 @@ The action still accepts the old input names (`toolchain`, `version`,
 `ccache-key`, `cache-scope`, `buildmaster-datadir-cache-key`,
 `configure-options`, `target`, `run-tests`, `install-location`, and
 `install-meson`) as compatibility aliases. Prefer the canonical names above.
+
+## CPU baseline
+
+| Platform | `cpu-baseline: auto` |
+|---|---|
+| Linux x64 (glibc and musl) | `-march=x86-64-v3` (AVX2, FMA, BMI1/2) |
+| Linux ARM64 (glibc and musl) | `-march=armv8.2-a` |
+| macOS ARM64 | `-mcpu=apple-m1` |
+| Windows x64 (MSVC and clang-cl) | `/arch:AVX` |
+
+`auto` fails on other platforms, such as macOS x64; set an explicit value or
+`none` there. Windows ARM64 is not supported.
+
+The flags are appended to the `CFLAGS` and `CXXFLAGS` environment used by the
+CMake configure step, and to any `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS` given in
+`cmake-options`. CMake therefore keeps its compiler defaults (for example the
+MSVC `/DWIN32 /EHsc` flags), and the result lands in the `CMAKE_C_FLAGS` and
+`CMAKE_CXX_FLAGS` cache entries. BuildMaster passes those entries to every
+CMake and Meson dependency it builds, and StormByte's `pgo.cmake` copies them
+to the instrumented build, so the whole binary uses one baseline.
+
+If `CFLAGS`, `CXXFLAGS`, or any `CMAKE_C_FLAGS*`/`CMAKE_CXX_FLAGS*` value in
+`cmake-options` already contains `-march=`, `-mcpu=`, `/arch:`, or `-arch:`,
+the caller's choice wins: the baseline is not applied and the action emits a
+warning. `-mtune=` alone does not select a target CPU and does not disable the
+baseline. For musl builds only the variables forwarded into Alpine are checked.
+
+The action does not set an optimization level. Release builds use CMake's
+default (`-O3` for GCC/Clang, `/O2` for MSVC/clang-cl) unless the project or
+the caller overrides `CMAKE_<LANG>_FLAGS_RELEASE`. BuildMaster dependencies
+keep their own build-type defaults.
 
 ## Toolchain and runtime behavior
 
@@ -104,7 +136,8 @@ does not provide one.
 
 Compiler cache keys include OS, runner architecture, libc, compiler and version,
 C++ standard library, build type, PGO/LTO settings, job, namespace, and optional
-scope. BuildMaster keys use the same platform/build-variant dimensions and also
+scope. The effective `cpu-baseline` flags are part of the key's SHA-256
+identity. BuildMaster keys use the same platform/build-variant dimensions and also
 include job, namespace, and optional scope. Each action run saves its own
 snapshot; old snapshots are removed only for that exact key and ref, and only
 after the replacement is visible in the Actions cache API. Snapshot delimiters
@@ -137,6 +170,7 @@ permissions:
     build-type: Release
     pgo: false
     lto: false
+    cpu-baseline: auto
     cmake-options: -DENABLE_TEST=ON
     ctest: true
 ```
