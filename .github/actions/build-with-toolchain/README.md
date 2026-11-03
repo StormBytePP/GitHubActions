@@ -204,7 +204,7 @@ The tag release must already exist. The action does not create releases.
 
 Asset names preserve the repository and tag:
 
-- Linux: `<repository>-<tag>-linux-<x64|arm64>-<glibc|musl>-<libstdc++|libc++>.zip`
+- Linux: `<repository>-<tag>-linux-<amd64|arm64>-<glibc|musl>-<libstdc++|libc++>.zip`
 - macOS: `<repository>-<tag>-macos-<x64|arm64>.zip`
 - Windows: `<repository>-<tag>-windows-x64.zip`
 

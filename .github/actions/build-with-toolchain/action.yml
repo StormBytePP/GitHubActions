@@ -1709,7 +1709,10 @@ runs:
           *) echo "::error::Unsupported release architecture: $RUNNER_ARCH"; exit 1 ;;
         esac
         case "$RUNNER_OS" in
-          Linux) suffix="linux-${arch}-${LIBC}-${CXX_STDLIB}" ;;
+          Linux)
+            if [[ "$arch" == x64 ]]; then arch=amd64; fi
+            suffix="linux-${arch}-${LIBC}-${CXX_STDLIB}"
+            ;;
           macOS) suffix="macos-${arch}" ;;
           Windows) suffix="windows-${arch}" ;;
           *) echo "::error::Unsupported release OS: $RUNNER_OS"; exit 1 ;;

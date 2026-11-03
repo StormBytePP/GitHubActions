@@ -312,9 +312,16 @@ test("release archives use the agreed names and preserve notices and symlinks", 
   fs.writeFileSync(path.join(f.workspace, "THIRD-PARTY.md"), "third-party text variant");
 
   for (const [platform, arch, libc, stdlib, name] of [
-    ["Linux", "X64", "glibc", "libstdc++", "StormByte-2.2.3-linux-x64-glibc-libstdc++.zip"],
+    ["Linux", "X64", "glibc", "libstdc++", "StormByte-2.2.3-linux-amd64-glibc-libstdc++.zip"],
+    ["Linux", "X64", "glibc", "libc++", "StormByte-2.2.3-linux-amd64-glibc-libc++.zip"],
+    ["Linux", "X64", "musl", "libstdc++", "StormByte-2.2.3-linux-amd64-musl-libstdc++.zip"],
+    ["Linux", "X64", "musl", "libc++", "StormByte-2.2.3-linux-amd64-musl-libc++.zip"],
+    ["Linux", "ARM64", "glibc", "libstdc++", "StormByte-2.2.3-linux-arm64-glibc-libstdc++.zip"],
+    ["Linux", "ARM64", "glibc", "libc++", "StormByte-2.2.3-linux-arm64-glibc-libc++.zip"],
+    ["Linux", "ARM64", "musl", "libstdc++", "StormByte-2.2.3-linux-arm64-musl-libstdc++.zip"],
     ["Linux", "ARM64", "musl", "libc++", "StormByte-2.2.3-linux-arm64-musl-libc++.zip"],
     ["macOS", "ARM64", "glibc", "libc++", "StormByte-2.2.3-macos-arm64.zip"],
+    ["macOS", "X64", "glibc", "libc++", "StormByte-2.2.3-macos-x64.zip"],
     ["Windows", "X64", "glibc", "", "StormByte-2.2.3-windows-x64.zip"]
   ]) {
     const result = packageRelease(f, platform, arch, libc, stdlib);
@@ -323,7 +330,7 @@ test("release archives use the agreed names and preserve notices and symlinks", 
   }
   const extract = path.join(f.root, "extract");
   fs.mkdirSync(extract);
-  const archive = path.join(f.temp, "StormByte-2.2.3-linux-x64-glibc-libstdc++.zip");
+  const archive = path.join(f.temp, "StormByte-2.2.3-linux-amd64-glibc-libstdc++.zip");
   const result = spawnSync("cmake", ["-E", "tar", "xf", archive], { cwd: extract, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(fs.readFileSync(path.join(extract, "LICENSE"), "utf8"), "license text");
@@ -352,7 +359,7 @@ test("release upload requires an existing release and uses the exact tag and ass
 printf '%s\\n' "$*" >> "$GH_CALLS"
 if [ "$2" = view ] && [ "\${FAIL_VIEW:-0}" = 1 ]; then exit 1; fi
 `, { mode: 0o755 });
-  const asset = path.join(f.temp, "component-1-linux-x64-glibc-libstdc++.zip");
+  const asset = path.join(f.temp, "component-1-linux-amd64-glibc-libstdc++.zip");
   fs.writeFileSync(asset, "archive");
   const env = {
     PATH: `${bin}:${process.env.PATH}`, GH_CALLS: path.join(f.root, "gh-calls"),
