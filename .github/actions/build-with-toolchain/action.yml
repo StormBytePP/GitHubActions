@@ -1472,7 +1472,7 @@ runs:
           "${docker_env[@]}" \
           alpine:3.24 /bin/sh -eu -c '
             packages="bash build-base cmake pkgconf ca-certificates curl git zip unzip tar xz python3 py3-pip autoconf automake libtool perl openssl nasm yasm linux-headers bison flex su-exec"
-            [ "$COMPILER" != clang ] || packages="$packages clang22 lld22 llvm22 compiler-rt"
+            [ "$COMPILER" != clang ] || packages="$packages clang22 clang22-extra-tools lld22 llvm22 compiler-rt"
             [ "$CXX_STDLIB" != libc++ ] || packages="$packages libc++-dev libc++-static llvm-libunwind-dev"
             [ "$CACHE_ENABLED" != true ] || packages="$packages ccache"
             [ "$DOCS" != true ] || packages="$packages doxygen graphviz"

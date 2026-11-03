@@ -101,7 +101,8 @@ provide compatible runtimes in addition to the stated C-library baseline.
 The Ubuntu toolchain includes the common source-build tools, including Perl,
 OpenSSL, NASM, YASM, Flex, Bison, pkg-config, Autotools, and the Clang profile
 runtime. Alpine installs their native equivalents, an actual Ninja binary,
-and, for Clang, compiler-rt and the matching LLVM tools. Meson and Doxygen
+and, for Clang, compiler-rt, `clang-scan-deps` for C++ modules and the
+matching LLVM tools. Meson and Doxygen
 remain controlled by `meson` and `docs`.
 
 Use `extra-packages` for project-specific dependencies: they are installed
