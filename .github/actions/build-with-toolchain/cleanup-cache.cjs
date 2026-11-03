@@ -1,11 +1,12 @@
 module.exports = async function cleanup({ github, context, core }) {
   const key = process.env.CACHE_KEY;
   const currentKey = process.env.CACHE_SAVE_KEY;
-  if (!key || !currentKey || !currentKey.startsWith(`${key}-`)) {
+  const keyPrefix = `${key}--`;
+  if (!key || !currentKey || !currentKey.startsWith(keyPrefix) ||
+      !/^\d+-\d+$/.test(currentKey.slice(keyPrefix.length))) {
     throw new Error("Missing or inconsistent cache keys; refusing cache cleanup");
   }
 
-  const keyPrefix = `${key}-`;
   const caches = await github.paginate(
     github.rest.actions.getActionsCacheList,
     { ...context.repo, key: keyPrefix, ref: context.ref, per_page: 100 }

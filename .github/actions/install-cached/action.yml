@@ -29,16 +29,22 @@ inputs:
     required: false
     default: "apt-lists"
 
+  libc:
+    description: "Linux libc cache scope. APT package caches are normally glibc-only."
+    required: false
+    default: "glibc"
+
   rotate-weekly:
     description: >
-      If true, append UTC ISO week (YYYY-Www) to lists-cache-key
-      (must match update-apt-cached).
+      If true, append UTC ISO week (YYYY-Www) to this action's exact APT-index
+      cache key. It can still restore indexes saved by update-apt-cached via
+      the shared base-key restore prefix.
     required: false
     default: "true"
 
   unique:
     description: >
-      Linux deb cache only. If true (default), use cache-key as-is.
+      Linux deb cache only. If true (default), use cache-key as the base prefix.
       If false, append a hash of the normalized package list.
     required: false
     default: "true"
@@ -200,12 +206,18 @@ runs:
       if: runner.os == 'Linux'
       id: lists
       shell: bash
+      env:
+        LIBC: ${{ inputs.libc }}
       run: |
         set -euo pipefail
 
         echo "🔑 Resolving APT lists cache key..."
 
         BASE="$(echo "${{ inputs.lists-cache-key }}" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+        if [ "$LIBC" != glibc ]; then
+          echo "::error::install-cached supports APT cache operations on glibc runners only"
+          exit 1
+        fi
 
         if [ -z "$BASE" ]; then
           echo "enabled=false" >> "$GITHUB_OUTPUT"
@@ -213,18 +225,33 @@ runs:
           exit 0
         fi
 
+        . /etc/os-release
+        if [ -z "${ID:-}" ] || [ -z "${VERSION_ID:-}" ]; then
+          echo "::error::APT cache requires ID and VERSION_ID in /etc/os-release"
+          exit 1
+        fi
+        DISTRO="${ID}-${VERSION_ID}"
+        case "$DISTRO" in *[!A-Za-z0-9._-]*)
+          echo "::error::Invalid OS identification for APT cache: $DISTRO"
+          exit 1
+          ;;
+        esac
+        PREFIX="${BASE}-${{ runner.os }}-${{ runner.arch }}-${LIBC}-${DISTRO}"
         if [ "${{ inputs.rotate-weekly }}" = "true" ]; then
           WEEK="$(date -u +%G-W%V)"
-          KEY="${BASE}-${WEEK}"
+          KEY="${PREFIX}-${WEEK}"
         else
-          KEY="${BASE}"
+          KEY="${PREFIX}"
         fi
 
-        LISTS_DIR="$HOME/apt-cache/${KEY}/lists"
+        LISTS_ROOT="$HOME/apt-cache/${PREFIX}"
+        LISTS_DIR="${LISTS_ROOT}/lists"
         mkdir -p "$LISTS_DIR"
 
         echo "enabled=true" >> "$GITHUB_OUTPUT"
         echo "lists_key=${KEY}" >> "$GITHUB_OUTPUT"
+        echo "lists_prefix=${PREFIX}" >> "$GITHUB_OUTPUT"
+        echo "lists_root=${LISTS_ROOT}" >> "$GITHUB_OUTPUT"
         echo "lists_dir=${LISTS_DIR}" >> "$GITHUB_OUTPUT"
         echo "LISTS_KEY=${KEY}" >> "$GITHUB_ENV"
         echo "LISTS_DIR=${LISTS_DIR}" >> "$GITHUB_ENV"
@@ -236,8 +263,10 @@ runs:
       id: restore-lists
       uses: actions/cache/restore@v6
       with:
-        path: ${{ steps.lists.outputs.lists_dir }}
+        path: ${{ steps.lists.outputs.lists_root }}
         key: ${{ steps.lists.outputs.lists_key }}
+        restore-keys: |
+          ${{ steps.lists.outputs.lists_prefix }}-
 
     - name: Seed APT lists or update
       if: runner.os == 'Linux' && steps.pkgs.outputs.empty != 'true'
@@ -260,13 +289,12 @@ runs:
 
         if [ "${{ steps.lists.outputs.enabled }}" = "true" ]; then
           LISTS_DIR="${{ steps.lists.outputs.lists_dir }}"
-          if compgen -G "${LISTS_DIR}/*" > /dev/null; then
+          if find "$LISTS_DIR" -maxdepth 1 -type f \
+            \( -name '*_Packages' -o -name '*_Packages.*' \) -print -quit | grep -q .; then
             echo "📁 Seeding /var/lib/apt/lists from ${LISTS_DIR}..."
-            sudo find "${LISTS_DIR}" -maxdepth 1 -type f -exec cp --update=none {} /var/lib/apt/lists/ \;
-            if sudo find /var/lib/apt/lists -maxdepth 1 -type f -name '*_Packages' | grep -q .; then
-              NEED_UPDATE=0
-              echo "✅ Restored lists usable; skipping apt-get update"
-            fi
+            sudo find "${LISTS_DIR}" -maxdepth 1 -type f -exec cp -f -t /var/lib/apt/lists/ -- {} +
+            NEED_UPDATE=0
+            echo "✅ Restored lists usable; skipping apt-get update"
           fi
         fi
 
@@ -289,6 +317,18 @@ runs:
 
         PACKAGES_NORMALIZED="${{ steps.pkgs.outputs.packages }}"
         PREFIX="$(echo "${{ inputs.cache-key }}" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+        . /etc/os-release
+        if [ -z "${ID:-}" ] || [ -z "${VERSION_ID:-}" ]; then
+          echo "::error::APT cache requires ID and VERSION_ID in /etc/os-release"
+          exit 1
+        fi
+        DISTRO="${ID}-${VERSION_ID}"
+        case "$DISTRO" in *[!A-Za-z0-9._-]*)
+          echo "::error::Invalid OS identification for APT cache: $DISTRO"
+          exit 1
+          ;;
+        esac
+        PREFIX="${PREFIX}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.libc }}-${DISTRO}"
 
         if [ "${{ inputs.unique }}" = "true" ]; then
           DEBS_KEY="${PREFIX}"
@@ -329,7 +369,7 @@ runs:
         sudo mkdir -p /var/cache/apt/archives/partial
 
         if compgen -G "${DEBS_DIR}/*.deb" > /dev/null; then
-          sudo cp --update=none "${DEBS_DIR}"/*.deb /var/cache/apt/archives/ || true
+          sudo cp --update=none "${DEBS_DIR}"/*.deb /var/cache/apt/archives/
           COUNT=$(ls -1 "${DEBS_DIR}"/*.deb 2>/dev/null | wc -l)
           echo "✅ Restored ${COUNT} deb(s)"
         else
@@ -355,7 +395,7 @@ runs:
           mkdir -p "${DEBS_DIR}"
           shopt -s nullglob
           for deb in /var/cache/apt/archives/*.deb; do
-            cp --update=none "$deb" "${DEBS_DIR}/" 2>/dev/null || true
+            cp --update=none "$deb" "${DEBS_DIR}/"
           done
           shopt -u nullglob
           echo "📁 Copied debs into cache dir"

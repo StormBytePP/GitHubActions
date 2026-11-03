@@ -42,42 +42,38 @@ runs:
         toolchain: clang
         docs: true
 
-    - name: Prepare cache key for extra packages
-      if: ${{ inputs.extra-install != '' }}
-      id: cachekey
-      shell: bash
-      run: |
-        san=$(printf '%s' "${{ inputs.extra-install }}" | tr -d ' ')
-        echo "cache_key=extra-apt-packages-${san}" >> "$GITHUB_OUTPUT"
-
     - name: Install extra packages
       if: ${{ inputs.extra-install != '' }}
       uses: stormbytepp/githubactions/.github/actions/install-cached@master
       with:
         packages: ${{ inputs.extra-install }}
-        cache-key: ${{ steps.cachekey.outputs.cache_key }}
+        cache-key: apt-doc-extra-v1
+        unique: false
 
     - name: Configure CMake
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}
         EXTRA_CMAKE_OPTIONS: ${{ inputs.extra-cmake-options }}
       run: |
         set -euo pipefail
-        # shellcheck disable=SC2086
+        source "$ACTION_PATH/../build-with-toolchain/configure-common.sh"
+        parse_action_arguments "$EXTRA_CMAKE_OPTIONS" "extra-cmake-options"
         cmake -S . -B "${{ github.workspace }}/build" \
           -G Ninja \
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_C_COMPILER="${{ steps.toolchain.outputs.c_compiler }}" \
           -DCMAKE_CXX_COMPILER="${{ steps.toolchain.outputs.cxx_compiler }}" \
-          ${EXTRA_CMAKE_OPTIONS}
+          ${PARSED_ARGS[@]+"${PARSED_ARGS[@]}"}
 
     - name: Build documentation target
       shell: bash
       run: |
         set -euo pipefail
+        jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
         cmake --build "${{ github.workspace }}/build" \
           --target "${{ inputs.doc_target }}" \
-          --parallel
+          --parallel "$jobs"
 
     - name: Build with Jekyll
       uses: actions/jekyll-build-pages@v1

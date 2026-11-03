@@ -2,7 +2,7 @@
 
 Composite GitHub Action that checks out a repository and **caches git submodules by commit SHA**.
 
-Parent repository checkout is always done with [`actions/checkout@v4`](https://github.com/actions/checkout). Submodules are initialized separately and restored from the Actions cache when the recorded gitlink SHAs match.
+Parent repository checkout is always done with [`actions/checkout@v7`](https://github.com/actions/checkout). Submodules are initialized separately and restored from the Actions cache when the recorded gitlink SHAs match.
 
 ## Author
 
@@ -84,11 +84,11 @@ steps:
 
 ## External actions used
 
-- `actions/checkout@v4`
-- `actions/cache/restore@v4`
-- `actions/cache/save@v4`
+- `actions/checkout@v7`
+- `actions/cache/restore@v6`
+- `actions/cache/save@v6`
 
 ## License
 
 This repository is licensed under the **MIT License**.  
-See [`LICENSE.txt`](LICENSE.txt) at the repository root for the full text.
+See [`LICENSE.txt`](../../../LICENSE.txt) at the repository root for the full text.

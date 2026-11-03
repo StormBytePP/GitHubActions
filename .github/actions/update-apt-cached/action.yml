@@ -1,7 +1,7 @@
 name: "Update APT lists (cached)"
 description: >
   Linux only. Restore cached APT indexes, then decide whether to refresh
-  them from the mirrors under a hard timeout. Cache is a fallback when
+  them from the mirrors with per-request timeouts. Cache is a fallback when
   mirrors hang; it is not a weekly freeze of Packages.
 author: "David C. Manuelda"
 branding:
@@ -12,9 +12,15 @@ inputs:
   cache-key:
     description: >
       Cache key prefix (e.g. apt-lists). Empty disables caching (no-op).
-      OS and a short InRelease hash are appended. One logical family per OS.
+      OS, distribution version, runner architecture, libc, and a short InRelease hash are appended.
+      One logical cache family per platform variant.
     required: false
     default: "apt-lists"
+
+  libc:
+    description: "Linux libc cache scope; APT is intended for glibc runners."
+    required: false
+    default: "glibc"
 
   acquire-timeout:
     description: "Seconds per HTTP(S) attempt against Ubuntu mirrors."
@@ -40,15 +46,32 @@ runs:
       if: runner.os == 'Linux'
       id: meta
       shell: bash
+      env:
+        LIBC: ${{ inputs.libc }}
       run: |
         set -euo pipefail
         BASE="$(echo "${{ inputs.cache-key }}" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+        if [ "$LIBC" != glibc ]; then
+          echo "::error::update-apt-cached supports Ubuntu glibc runners only"
+          exit 1
+        fi
         if [ -z "$BASE" ]; then
           echo "enabled=false" >> "$GITHUB_OUTPUT"
           echo "cache-key empty — bypass"
           exit 0
         fi
-        PREFIX="${BASE}-${{ runner.os }}"
+        . /etc/os-release
+        if [ "${ID:-}" != ubuntu ] || [ -z "${VERSION_ID:-}" ]; then
+          echo "::error::update-apt-cached requires an Ubuntu runner with VERSION_ID"
+          exit 1
+        fi
+        DISTRO="${ID}-${VERSION_ID}"
+        case "$DISTRO" in *[!A-Za-z0-9._-]*)
+          echo "::error::Invalid OS identification for APT cache: $DISTRO"
+          exit 1
+          ;;
+        esac
+        PREFIX="${BASE}-${{ runner.os }}-${{ runner.arch }}-${LIBC}-${DISTRO}"
         LISTS_ROOT="$HOME/apt-cache/${PREFIX}"
         mkdir -p "$LISTS_ROOT"
         echo "enabled=true" >> "$GITHUB_OUTPUT"
@@ -78,8 +101,20 @@ runs:
           exit 0
         fi
 
-        ARCHIVE="http://archive.ubuntu.com/ubuntu"
-        SECURITY="http://security.ubuntu.com/ubuntu"
+        case "${{ runner.arch }}" in
+          X64)
+            ARCHIVE="https://archive.ubuntu.com/ubuntu"
+            SECURITY="https://security.ubuntu.com/ubuntu"
+            ;;
+          ARM64)
+            ARCHIVE="https://ports.ubuntu.com/ubuntu-ports"
+            SECURITY="$ARCHIVE"
+            ;;
+          *)
+            echo "::error::Unsupported Ubuntu runner architecture: ${{ runner.arch }}"
+            exit 1
+            ;;
+        esac
         URLS=(
           "${ARCHIVE}/dists/${CODE}/InRelease"
           "${ARCHIVE}/dists/${CODE}-updates/InRelease"
@@ -148,11 +183,13 @@ runs:
         sudo mkdir -p /var/lib/apt/lists/partial
 
         seed_lists() {
-          if compgen -G "${LISTS_DIR}/*" >/dev/null; then
-            sudo find "$LISTS_DIR" -maxdepth 1 -type f -exec cp --update=none {} /var/lib/apt/lists/ \;
-            if sudo find /var/lib/apt/lists -maxdepth 1 -type f -name '*_Packages' | grep -q .; then
-              return 0
+          if find "$LISTS_DIR" -maxdepth 1 -type f \
+            \( -name '*_Packages' -o -name '*_Packages.*' \) -print -quit | grep -q .; then
+            if ! sudo find "$LISTS_DIR" -maxdepth 1 -type f -exec cp -f -t /var/lib/apt/lists/ -- {} +; then
+              echo "::error::Failed to restore cached APT indexes" >&2
+              exit 1
             fi
+            return 0
           fi
           return 1
         }
@@ -166,8 +203,8 @@ runs:
 
         save_lists() {
           mkdir -p "$LISTS_DIR"
-          sudo find /var/lib/apt/lists -maxdepth 1 -type f -exec cp -f {} "$LISTS_DIR/" \;
-          sudo chown -R "$(id -u):$(id -g)" "$LISTS_ROOT" || true
+          sudo find /var/lib/apt/lists -maxdepth 1 -type f -exec cp -f -t "$LISTS_DIR/" -- {} +
+          sudo chown -R "$(id -u):$(id -g)" "$LISTS_ROOT"
         }
 
         SEEDED=0

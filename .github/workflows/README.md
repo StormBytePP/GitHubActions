@@ -19,8 +19,9 @@ Reusable workflow that builds documentation using the `generate-doc` composite a
 ### Behavior
 
 1. **generate-docs** job  
+   - Runs on `ubuntu-26.04`, which provides the default Clang 22 toolchain.
    - Calls `generate-doc` (checkout with cached submodules, toolchain, CMake doc target, Jekyll → `./_site`)  
-   - Uploads `docs_output_dir` with `actions/upload-pages-artifact@v3`
+   - Uploads `docs_output_dir` with `actions/upload-pages-artifact@v4`
 
 2. **deploy** job  
    - Depends on `generate-docs`  
@@ -41,6 +42,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
   pages: write
   id-token: write
 
@@ -61,19 +63,20 @@ The **calling** workflow should declare:
 ```yaml
 permissions:
   contents: read
+  actions: write
   pages: write
   id-token: write
 ```
 
-The reusable `generate-docs` job also sets `actions: write` so submodule caches from `checkout-cached` can be saved.
+The reusable `generate-docs` job also sets `actions: write` so submodule caches from `checkout-cached` can be saved. A called workflow cannot grant permissions omitted by the caller.
 
 ### External actions used
 
 - `stormbytepp/githubactions/.github/actions/generate-doc`
-- `actions/upload-pages-artifact@v3`
+- `actions/upload-pages-artifact@v4`
 - `actions/deploy-pages@v4`
 
 ### License
 
 This repository is licensed under the **MIT License**.  
-See [`LICENSE.txt`](LICENSE.txt) at the repository root for the full text.
+See [`LICENSE.txt`](../../LICENSE.txt) at the repository root for the full text.

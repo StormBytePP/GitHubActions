@@ -29,9 +29,17 @@ David C. Manuelda
 
 1. Checks out the repository with **cached submodules** (`checkout-cached`, full history, recursive).
 2. Installs a **clang** toolchain via `install-toolchain` with documentation tools enabled (`doxygen`, `graphviz`).
-3. If `extra-install` is set, installs those packages via `install-cached`.
+3. If `extra-install` is set, installs those packages via `install-cached`,
+   with a cache scoped to the normalized package list and platform.
 4. Configures the project with **CMake + Ninja** (Release) and builds the given `doc_target`.
 5. Runs **Jekyll** (`actions/jekyll-build-pages`) with `source` = `docs_source_dir` and `destination` = `./_site`.
+
+`extra-cmake-options` accepts shell-style quoting and rejects malformed input.
+The documentation action runs on the host; it does not use the Alpine build
+container. Its default Clang 22 toolchain is available on Ubuntu 26.04; the
+reusable documentation workflow selects `ubuntu-26.04` explicitly.
+Multimedia's FFmpeg-system documentation job has additional
+repository and package setup in its own workflow.
 
 ## Usage
 
@@ -69,4 +77,4 @@ jobs:
 ## License
 
 This repository is licensed under the **MIT License**.  
-See [`LICENSE.txt`](LICENSE.txt) at the repository root for the full text.
+See [`LICENSE.txt`](../../../LICENSE.txt) at the repository root for the full text.

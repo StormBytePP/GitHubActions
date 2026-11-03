@@ -3,7 +3,7 @@ const { test } = require("node:test");
 const cleanup = require("./cleanup-cache.cjs");
 
 const key = "sccache-Windows-clang-cl-v1-build-windows";
-const currentKey = `${key}-200-1`;
+const currentKey = `${key}--200-1`;
 const current = {
   id: 2,
   key: currentKey,
@@ -11,7 +11,7 @@ const current = {
   version: "cache-version",
   created_at: "2026-10-23T13:00:00Z"
 };
-const old = { ...current, id: 1, key: `${key}-100-1`, created_at: "2026-10-22T13:00:00Z" };
+const old = { ...current, id: 1, key: `${key}--100-1`, created_at: "2026-10-22T13:00:00Z" };
 
 async function run(caches, ref = current.ref) {
   process.env.CACHE_KEY = key;
@@ -29,7 +29,7 @@ async function run(caches, ref = current.ref) {
     },
     paginate: async (method, params) => {
       assert.equal(method, list);
-      assert.deepEqual(params, { ...context.repo, ref, key: `${key}-`, per_page: 100 });
+      assert.deepEqual(params, { ...context.repo, ref, key: `${key}--`, per_page: 100 });
       return caches;
     }
   };
@@ -67,8 +67,8 @@ test("a same-key cache on another ref is not proof of a successful upload", asyn
 });
 
 test("keeps newer and equally old entries from concurrent runs", async () => {
-  const newer = { ...current, id: 3, key: `${key}-300-1`, created_at: "2026-10-24T13:00:00Z" };
-  const simultaneous = { ...current, id: 4, key: `${key}-201-1` };
+  const newer = { ...current, id: 3, key: `${key}--300-1`, created_at: "2026-10-24T13:00:00Z" };
+  const simultaneous = { ...current, id: 4, key: `${key}--201-1` };
   const result = await run([old, current, newer, simultaneous]);
   assert.deepEqual(result.deleted, [old.id]);
 });
@@ -79,7 +79,7 @@ test("deletes older caches even when the version (content hash) differs", async 
 });
 
 test("does not delete matrix scopes whose keys share a prefix", async () => {
-  const result = await run([current, { ...old, key: `${key}-extra-100-1` }]);
+  const result = await run([current, { ...old, key: `${key}-extra--100-1` }]);
   assert.deepEqual(result.deleted, []);
 });
 
@@ -89,7 +89,7 @@ test("keeps entries with an invalid creation timestamp", async () => {
 });
 
 test("rejects missing or inconsistent keys before listing caches", async () => {
-  for (const saveKey of ["", "unrelated-200-1"]) {
+  for (const saveKey of ["", "unrelated--200-1", `${key}-200-1`, `${key}--extra-200-1`]) {
     process.env.CACHE_KEY = key;
     process.env.CACHE_SAVE_KEY = saveKey;
     await assert.rejects(cleanup({}), /Missing or inconsistent cache keys/);

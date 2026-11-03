@@ -6,33 +6,112 @@ branding:
   color: "blue"
 
 inputs:
+  compiler:
+    description: "gcc, clang, msvc, or clang-cl (Windows only)"
+    required: false
+    default: ""
+
+  compiler-version:
+    description: "Optional major version for gcc/clang"
+    required: false
+    default: ""
+
+  cxx-stdlib:
+    description: "C++ standard library: libstdc++ or libc++. Empty uses the platform default."
+    required: false
+    default: ""
+
+  libc:
+    description: "Linux C library: glibc or musl. musl builds run in Alpine 3.24."
+    required: false
+    default: "glibc"
+
+  compiler-cache-key:
+    description: "Compiler cache namespace. Empty disables compiler caching."
+    required: false
+    default: ""
+
+  compiler-cache-scope:
+    description: "Extra compiler-cache namespace for matrix cells or parallel jobs."
+    required: false
+    default: ""
+
+  buildmaster-cache-key:
+    description: "BuildMaster downloads-cache namespace. Empty disables that cache."
+    required: false
+    default: ""
+
+  cmake-options:
+    description: "Extra CMake configure options"
+    required: false
+    default: ""
+
+  build-target:
+    description: "Optional CMake target to build (empty = all)"
+    required: false
+    default: ""
+
+  ctest:
+    description: "Run ctest after build"
+    required: false
+    default: ""
+
+  install-prefix:
+    description: "Set CMAKE_INSTALL_PREFIX; does not trigger installation."
+    required: false
+    default: ""
+
+  meson:
+    description: "Install Meson via pip."
+    required: false
+    default: ""
+
+  extra-packages:
+    description: "Additional packages for the build environment (APT, apk, Homebrew, or Chocolatey names)."
+    required: false
+    default: ""
+
+  container-env:
+    description: "Additional host environment variable names to forward to the Alpine container."
+    required: false
+    default: ""
+
+  pgo:
+    description: "Set ENABLE_PGO to true or false. Empty leaves the CMake option unchanged."
+    required: false
+    default: ""
+
+  lto:
+    description: "Set ENABLE_LTO to true or false. Empty leaves the CMake option unchanged."
+    required: false
+    default: ""
+
+  deploy:
+    description: "Install and upload a ZIP to the existing GitHub release for this tag."
+    required: false
+    default: "false"
+
+  # Backward-compatible aliases. Prefer the canonical names above.
   toolchain:
     description: "gcc, clang, clang-libc++, msvc, or clang-cl (Windows only)"
-    required: true
+    required: false
+    default: ""
 
   ccache-key:
     description: >
-      Non-empty enables compiler caching. Namespace suffix (e.g. "v1" or
-      "v1-clang-extra-OFF"). Combined with OS, toolchain, job id and cache-scope.
+      Deprecated alias for compiler-cache-key.
     required: false
     default: ""
 
   cache-scope:
     description: >
-      Extra uniqueness per matrix cell / parallel job. Composite actions cannot
-      see the matrix context; pass the value from the workflow (e.g. the matrix
-      extra field, or os-extra). Empty is fine if ccache-key already differs
-      per matrix cell.
+      Deprecated alias for compiler-cache-scope.
     required: false
     default: ""
 
   buildmaster-datadir-cache-key:
     description: >
-      Cache key for BuildMaster's data directory. Empty skips that cache and
-      does not pass BUILDMASTER_DATADIR. Non-empty restores and saves
-      $RUNNER_TEMP/buildmaster-datadir under this key and configures
-      CMake with -DBUILDMASTER_DATADIR pointing at that folder. Put the OS in
-      the key when jobs must not share downloads.
+      Deprecated alias for buildmaster-cache-key.
     required: false
     default: ""
 
@@ -52,17 +131,17 @@ inputs:
     default: "Debug"
 
   configure-options:
-    description: "Extra CMake configure options"
+    description: "Deprecated alias for cmake-options."
     required: false
     default: ""
 
   target:
-    description: "Optional CMake target to build (empty = all)"
+    description: "Deprecated alias for build-target."
     required: false
     default: ""
 
   run-tests:
-    description: "Run ctest after build"
+    description: "Deprecated alias for ctest."
     required: false
     default: "false"
 
@@ -72,17 +151,17 @@ inputs:
     default: "false"
 
   install-location:
-    description: "cmake --install prefix. Empty keeps the prefix from configure."
+    description: "Deprecated alias for install-prefix."
     required: false
     default: ""
 
   ctest-options:
     description: "Extra options for ctest"
     required: false
-    default: "--output-on-failure"
+    default: ""
 
   version:
-    description: "Optional major version for gcc/clang"
+    description: "Deprecated alias for compiler-version."
     required: false
     default: ""
 
@@ -93,11 +172,12 @@ inputs:
 
   install-meson:
     description: >
-      Install Meson via pip (default: true).
-      Windows: pin meson==1.10.0 (workaround for known bugs).
-      Linux/macOS: install latest Meson from PyPI.
+      Deprecated alias for meson. Installs Meson via pip; Windows requires
+      1.12.1 or newer.
     required: false
     default: "true"
+
+  # Deprecated no-op retained for existing workflows.
 
   msvc-embedded-debug:
     description: >
@@ -109,44 +189,230 @@ inputs:
 
 outputs:
   c_compiler:
-    value: ${{ steps.toolchain.outputs.c_compiler }}
+    value: ${{ steps.options.outputs.libc == 'musl' && steps.options.outputs.compiler == 'clang' && 'clang-22' || steps.options.outputs.libc == 'musl' && 'gcc' || steps.toolchain.outputs.c_compiler }}
   cxx_compiler:
-    value: ${{ steps.toolchain.outputs.cxx_compiler }}
+    value: ${{ steps.options.outputs.libc == 'musl' && steps.options.outputs.compiler == 'clang' && 'clang++-22' || steps.options.outputs.libc == 'musl' && 'g++' || steps.toolchain.outputs.cxx_compiler }}
 
 runs:
   using: "composite"
   steps:
 
+    - name: Resolve build options
+      id: options
+      shell: bash
+      env:
+        INPUT_COMPILER: ${{ inputs.compiler }}
+        INPUT_COMPILER_LEGACY: ${{ inputs.toolchain }}
+        INPUT_COMPILER_VERSION: ${{ inputs.compiler-version }}
+        INPUT_COMPILER_VERSION_LEGACY: ${{ inputs.version }}
+        INPUT_COMPILER_CACHE_KEY: ${{ inputs.compiler-cache-key }}
+        INPUT_COMPILER_CACHE_KEY_LEGACY: ${{ inputs.ccache-key }}
+        INPUT_COMPILER_CACHE_SCOPE: ${{ inputs.compiler-cache-scope }}
+        INPUT_COMPILER_CACHE_SCOPE_LEGACY: ${{ inputs.cache-scope }}
+        INPUT_BUILDMASTER_CACHE_KEY: ${{ inputs.buildmaster-cache-key }}
+        INPUT_BUILDMASTER_CACHE_KEY_LEGACY: ${{ inputs.buildmaster-datadir-cache-key }}
+        INPUT_CMAKE_OPTIONS: ${{ inputs.cmake-options }}
+        INPUT_CMAKE_OPTIONS_LEGACY: ${{ inputs.configure-options }}
+        INPUT_BUILD_TARGET: ${{ inputs.build-target }}
+        INPUT_BUILD_TARGET_LEGACY: ${{ inputs.target }}
+        INPUT_CTEST: ${{ inputs.ctest }}
+        INPUT_CTEST_LEGACY: ${{ inputs.run-tests }}
+        INPUT_INSTALL_PREFIX: ${{ inputs.install-prefix }}
+        INPUT_INSTALL_PREFIX_LEGACY: ${{ inputs.install-location }}
+        INPUT_MESON: ${{ inputs.meson }}
+        INPUT_MESON_LEGACY: ${{ inputs.install-meson }}
+        INPUT_CXX_STDLIB: ${{ inputs.cxx-stdlib }}
+        INPUT_LIBC: ${{ inputs.libc }}
+        INPUT_PGO: ${{ inputs.pgo }}
+        INPUT_LTO: ${{ inputs.lto }}
+        INPUT_DEPLOY: ${{ inputs.deploy }}
+        REF_TYPE: ${{ github.ref_type }}
+        RUNNER_OS: ${{ runner.os }}
+        RUNNER_ARCH: ${{ runner.arch }}
+      run: |
+        set -euo pipefail
+
+        pick() {
+          local preferred="$1" fallback="$2"
+          if [[ -n "$preferred" ]]; then printf '%s' "$preferred"; else printf '%s' "$fallback"; fi
+        }
+        compiler="$(pick "$INPUT_COMPILER" "$INPUT_COMPILER_LEGACY")"
+        compiler_version="$(pick "$INPUT_COMPILER_VERSION" "$INPUT_COMPILER_VERSION_LEGACY")"
+        compiler_cache_key="$(pick "$INPUT_COMPILER_CACHE_KEY" "$INPUT_COMPILER_CACHE_KEY_LEGACY")"
+        compiler_cache_scope="$(pick "$INPUT_COMPILER_CACHE_SCOPE" "$INPUT_COMPILER_CACHE_SCOPE_LEGACY")"
+        buildmaster_cache_key="$(pick "$INPUT_BUILDMASTER_CACHE_KEY" "$INPUT_BUILDMASTER_CACHE_KEY_LEGACY")"
+        cmake_options="$(pick "$INPUT_CMAKE_OPTIONS" "$INPUT_CMAKE_OPTIONS_LEGACY")"
+        build_target="$(pick "$INPUT_BUILD_TARGET" "$INPUT_BUILD_TARGET_LEGACY")"
+        ctest="$(pick "$INPUT_CTEST" "$INPUT_CTEST_LEGACY")"
+        install_prefix="$(pick "$INPUT_INSTALL_PREFIX" "$INPUT_INSTALL_PREFIX_LEGACY")"
+        meson="$(pick "$INPUT_MESON" "$INPUT_MESON_LEGACY")"
+        cxx_stdlib="$INPUT_CXX_STDLIB"
+        libc="$INPUT_LIBC"
+        pgo="$INPUT_PGO"
+        lto="$INPUT_LTO"
+        deploy="$INPUT_DEPLOY"
+
+        if [[ "$compiler" == clang-libc++ ]]; then
+          compiler=clang
+          [[ -z "$cxx_stdlib" ]] && cxx_stdlib=libc++
+        fi
+        if [[ -z "$compiler" ]]; then
+          echo "::error::Input 'compiler' is required"
+          exit 1
+        fi
+        case "$compiler" in gcc|clang|msvc|clang-cl) ;; *)
+          echo "::error::Unsupported compiler: $compiler"
+          exit 1
+        esac
+        if [[ "$RUNNER_OS" == Windows && "$compiler" != msvc && "$compiler" != clang-cl ]]; then
+          echo "::error::Windows supports compiler=msvc or compiler=clang-cl"
+          exit 1
+        fi
+        if [[ "$RUNNER_OS" == Windows && "$RUNNER_ARCH" != X64 ]]; then
+          echo "::error::Windows builds are supported only on X64"
+          exit 1
+        fi
+        if [[ "$RUNNER_OS" != Windows && ( "$compiler" == msvc || "$compiler" == clang-cl ) ]]; then
+          echo "::error::msvc and clang-cl are supported only on Windows"
+          exit 1
+        fi
+        case "$libc" in glibc|musl) ;; *)
+          echo "::error::libc must be glibc or musl"
+          exit 1
+        esac
+        if [[ "$libc" == musl && "$RUNNER_OS" != Linux ]]; then
+          echo "::error::musl is supported only on Linux"
+          exit 1
+        fi
+        if [[ -n "$cxx_stdlib" ]]; then
+          case "$cxx_stdlib" in libstdc++|libc++) ;; *)
+            echo "::error::cxx-stdlib must be libstdc++ or libc++"
+            exit 1
+          esac
+        fi
+        if [[ "$RUNNER_OS" == Windows && -n "$cxx_stdlib" ]]; then
+          echo "::error::cxx-stdlib is not applicable to Windows toolchains"
+          exit 1
+        fi
+        if [[ "$RUNNER_OS" == macOS && "$compiler" == clang && "$cxx_stdlib" == libstdc++ ]]; then
+          echo "::error::Apple Clang does not support libstdc++; use libc++"
+          exit 1
+        fi
+        if [[ -z "$cxx_stdlib" ]]; then
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            cxx_stdlib=libstdc++
+          elif [[ "$RUNNER_OS" == macOS && "$compiler" == clang ]]; then
+            cxx_stdlib=libc++
+          fi
+        fi
+        if [[ -z "$compiler_version" ]]; then
+          case "$compiler" in
+            gcc)
+              if [[ "$libc" == musl ]]; then compiler_version=15; else compiler_version=16; fi
+              ;;
+            clang)
+              compiler_version=22
+              [[ "$RUNNER_OS" == macOS ]] && compiler_version=apple
+              ;;
+          esac
+        fi
+        if [[ "$cxx_stdlib" == libc++ && "$compiler" != clang ]]; then
+          echo "::error::libc++ requires compiler=clang"
+          exit 1
+        fi
+        for value in "$pgo" "$lto" "$ctest" "$deploy"; do
+          case "$value" in ""|true|false) ;; *)
+            echo "::error::Boolean inputs must be true or false (received '$value')"
+            exit 1
+          esac
+        done
+        for value in "$meson" "${{ inputs.docs }}" "${{ inputs.install }}"; do
+          case "$value" in true|false) ;; *)
+            echo "::error::Boolean inputs must be true or false (received '$value')"
+            exit 1
+          esac
+        done
+        if [[ "$deploy" == true && -z "$install_prefix" ]]; then
+          echo "::error::deploy=true requires install-prefix"
+          exit 1
+        fi
+        if [[ "$deploy" == true && "$REF_TYPE" != tag ]]; then
+          echo "::error::deploy=true requires a tag ref"
+          exit 1
+        fi
+        for value in "$compiler_version" "$compiler_cache_key" "$compiler_cache_scope" "$buildmaster_cache_key" "$build_target" "$ctest" "$install_prefix" "$meson" "$pgo" "$lto" "$deploy"; do
+          if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+            echo "::error::Single-line action inputs cannot contain line breaks"
+            exit 1
+          fi
+        done
+
+        {
+          echo "compiler=$compiler"
+          echo "compiler_version=$compiler_version"
+          echo "cxx_stdlib=$cxx_stdlib"
+          echo "libc=$libc"
+          echo "compiler_cache_key=$compiler_cache_key"
+          echo "compiler_cache_scope=$compiler_cache_scope"
+          echo "buildmaster_cache_key=$buildmaster_cache_key"
+          delimiter="OPTIONS_${RANDOM}_$$"
+          echo "cmake_options<<${delimiter}"
+          printf '%s\n' "$cmake_options"
+          echo "$delimiter"
+          echo "build_target=$build_target"
+          echo "ctest=$ctest"
+          echo "install_prefix=$install_prefix"
+          echo "meson=$meson"
+          echo "pgo=$pgo"
+          echo "lto=$lto"
+          echo "deploy=$deploy"
+        } >> "$GITHUB_OUTPUT"
+
     ###########################################################################
     # 0. COMPILER CACHE KEYS + STABLE CACHE DIRS
     ###########################################################################
     - name: Compute compiler cache keys
-      if: inputs.ccache-key != ''
+      if: steps.options.outputs.compiler_cache_key != ''
       id: cachekeys
       shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        COMPILER: ${{ steps.options.outputs.compiler }}
+        COMPILER_VERSION: ${{ steps.options.outputs.compiler_version }}
+        CXX_STDLIB: ${{ steps.options.outputs.cxx_stdlib }}
+        LIBC: ${{ steps.options.outputs.libc }}
+        BUILD_TYPE: ${{ inputs.build-type }}
+        PGO: ${{ steps.options.outputs.pgo }}
+        LTO: ${{ steps.options.outputs.lto }}
+        CACHE_NAMESPACE: ${{ steps.options.outputs.compiler_cache_key }}
+        CACHE_SCOPE: ${{ steps.options.outputs.compiler_cache_scope }}
       run: |
         set -euo pipefail
 
         echo "🔑 Computing compiler cache keys..."
 
         OS="${{ runner.os }}"
-        TOOL="${{ inputs.toolchain }}"
         JOB="${{ github.job }}"
-        SUFFIX="$(echo '${{ inputs.ccache-key }}' | tr -s ' ' | sed 's/^ *//;s/ *$//')"
-        SCOPE="$(echo '${{ inputs.cache-scope }}' | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+        ARCH="${{ runner.arch }}"
+        SUFFIX="$(echo "$CACHE_NAMESPACE" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+        SCOPE="$(echo "$CACHE_SCOPE" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
 
         if [ -z "$SUFFIX" ]; then
-          echo "❌ ccache-key is empty after trim"
+          echo "❌ compiler-cache-key is empty after trim"
           exit 1
         fi
 
-        sanitize() {
-          echo "$1" | sed 's/[^A-Za-z0-9._-]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//'
-        }
-        JOB_S="$(sanitize "$JOB")"
-        SCOPE_S="$(sanitize "$SCOPE")"
-        SUFFIX_S="$(sanitize "$SUFFIX")"
-        TOOL_S="$(sanitize "$TOOL")"
+        source "$ACTION_PATH/cache-key.sh"
+        JOB_S="$(sanitize_cache_part "$JOB")"
+        SCOPE_S="$(sanitize_cache_part "$SCOPE")"
+        SUFFIX_S="$(sanitize_cache_part "$SUFFIX")"
+        TOOL_S="$(sanitize_cache_part "$COMPILER")"
+        VERSION_S="$(sanitize_cache_part "${COMPILER_VERSION:-default}")"
+        STDLIB_S="$(sanitize_cache_part "${CXX_STDLIB:-default}")"
+        TYPE_S="$(sanitize_cache_part "$BUILD_TYPE")"
+        LIBC_S="$(sanitize_cache_part "$LIBC")"
+        PGO_S="$(sanitize_cache_part "${PGO:-default}")"
+        LTO_S="$(sanitize_cache_part "${LTO:-default}")"
 
         if [ "$OS" = "Windows" ]; then
           PREFIX="sccache"
@@ -172,12 +438,19 @@ runs:
           echo "📁 CCACHE_DIR=${CCACHE_DIR}"
         fi
 
-        KEY="${PREFIX}-${OS}-${TOOL_S}-${SUFFIX_S}-${JOB_S}"
+        KEY="${PREFIX}-${OS}-${ARCH}-${LIBC_S}-${TOOL_S}-${VERSION_S}-${STDLIB_S}-${TYPE_S}-pgo-${PGO_S}-lto-${LTO_S}-${SUFFIX_S}-${JOB_S}"
         if [ -n "$SCOPE_S" ]; then
           KEY="${KEY}-${SCOPE_S}"
         fi
+        IDENTITY="$(cache_identity_hash "$OS" "$ARCH" "$LIBC" "$COMPILER" "$COMPILER_VERSION" \
+          "$CXX_STDLIB" "$BUILD_TYPE" "$PGO" "$LTO" "$SUFFIX" "$JOB" "$SCOPE")"
+        KEY="${KEY}-${IDENTITY}"
 
-        SAVE_KEY="${KEY}-${{ github.run_id }}-${{ github.run_attempt }}"
+        SAVE_KEY="${KEY}--${{ github.run_id }}-${{ github.run_attempt }}"
+        if [ "${#SAVE_KEY}" -gt 512 ]; then
+          echo "::error::Computed compiler-cache key exceeds GitHub's 512-character limit"
+          exit 1
+        fi
 
         echo "cache_key=${KEY}" >> "$GITHUB_OUTPUT"
         echo "save_key=${SAVE_KEY}" >> "$GITHUB_OUTPUT"
@@ -189,24 +462,54 @@ runs:
     # 0b. BUILDMASTER DATADIR CACHE
     ###########################################################################
     - name: Prepare BuildMaster data directory
-      if: inputs.buildmaster-datadir-cache-key != ''
+      if: steps.options.outputs.buildmaster_cache_key != ''
       id: buildmaster
       shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        CACHE_NAMESPACE: ${{ steps.options.outputs.buildmaster_cache_key }}
+        COMPILER: ${{ steps.options.outputs.compiler }}
+        COMPILER_VERSION: ${{ steps.options.outputs.compiler_version }}
+        CXX_STDLIB: ${{ steps.options.outputs.cxx_stdlib }}
+        LIBC: ${{ steps.options.outputs.libc }}
+        BUILD_TYPE: ${{ inputs.build-type }}
+        PGO: ${{ steps.options.outputs.pgo }}
+        LTO: ${{ steps.options.outputs.lto }}
+        CACHE_SCOPE: ${{ steps.options.outputs.compiler_cache_scope }}
+        JOB_NAME: ${{ github.job }}
       run: |
         set -euo pipefail
 
-        KEY="$(echo '${{ inputs.buildmaster-datadir-cache-key }}' | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+        KEY="$(echo "$CACHE_NAMESPACE" | tr -s ' ' | sed 's/^ *//;s/ *$//')"
         if [ -z "$KEY" ]; then
-          echo "❌ buildmaster-datadir-cache-key is empty after trim"
+          echo "❌ buildmaster-cache-key is empty after trim"
           exit 1
         fi
 
-        sanitize() {
-          echo "$1" | sed 's/[^A-Za-z0-9._-]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//'
-        }
-        KEY_S="$(sanitize "$KEY")"
+        source "$ACTION_PATH/cache-key.sh"
+        KEY_S="$(sanitize_cache_part "$KEY")"
         if [ -z "$KEY_S" ]; then
-          echo "❌ buildmaster-datadir-cache-key has no usable characters"
+          echo "❌ buildmaster-cache-key has no usable characters"
+          exit 1
+        fi
+        ARCH="${{ runner.arch }}"
+        COMPILER_S="$(sanitize_cache_part "$COMPILER")"
+        VERSION_S="$(sanitize_cache_part "${COMPILER_VERSION:-default}")"
+        STDLIB_S="$(sanitize_cache_part "${CXX_STDLIB:-default}")"
+        TYPE_S="$(sanitize_cache_part "$BUILD_TYPE")"
+        LIBC_S="$(sanitize_cache_part "$LIBC")"
+        PGO_S="$(sanitize_cache_part "${PGO:-default}")"
+        LTO_S="$(sanitize_cache_part "${LTO:-default}")"
+        SCOPE_S="$(sanitize_cache_part "$CACHE_SCOPE")"
+        JOB_S="$(sanitize_cache_part "$JOB_NAME")"
+        KEY_S="${KEY_S}-${{ runner.os }}-${ARCH}-${LIBC_S}-${COMPILER_S}-${VERSION_S}-${STDLIB_S}-${TYPE_S}-pgo-${PGO_S}-lto-${LTO_S}-${JOB_S}"
+        if [ -n "$SCOPE_S" ]; then KEY_S="${KEY_S}-${SCOPE_S}"; fi
+        IDENTITY="$(cache_identity_hash "${{ runner.os }}" "$ARCH" "$LIBC" "$COMPILER" \
+          "$COMPILER_VERSION" "$CXX_STDLIB" "$BUILD_TYPE" "$PGO" "$LTO" "$KEY" "$JOB_NAME" "$CACHE_SCOPE")"
+        KEY_S="${KEY_S}-${IDENTITY}"
+        SAVE_KEY="${KEY_S}--${{ github.run_id }}-${{ github.run_attempt }}"
+        if [ "${#SAVE_KEY}" -gt 512 ]; then
+          echo "::error::Computed BuildMaster cache key exceeds GitHub's 512-character limit"
           exit 1
         fi
 
@@ -216,8 +519,8 @@ runs:
           DATADIR="${{ github.workspace }}/.buildmaster-datadir"
         fi
         mkdir -p "$DATADIR"
+        rm -rf "${DATADIR}/tmp"
 
-        SAVE_KEY="${KEY_S}-${{ github.run_id }}-${{ github.run_attempt }}"
         echo "datadir=${DATADIR}" >> "$GITHUB_OUTPUT"
         echo "cache_key=${KEY_S}" >> "$GITHUB_OUTPUT"
         echo "save_key=${SAVE_KEY}" >> "$GITHUB_OUTPUT"
@@ -231,19 +534,28 @@ runs:
     ###########################################################################
     - name: Install toolchain
       id: toolchain
+      if: steps.options.outputs.libc != 'musl'
       uses: stormbytepp/githubactions/.github/actions/install-toolchain@master
       with:
-        toolchain: ${{ inputs.toolchain }}
-        ccache-key: ${{ inputs.ccache-key }}
-        version: ${{ inputs.version }}
+        toolchain: ${{ steps.options.outputs.compiler == 'clang' && steps.options.outputs.cxx_stdlib == 'libc++' && 'clang-libc++' || steps.options.outputs.compiler }}
+        ccache-key: ${{ steps.options.outputs.compiler_cache_key }}
+        version: ${{ steps.options.outputs.compiler_version }}
         docs: ${{ inputs.docs }}
-        install-meson: ${{ inputs.install-meson }}
+        install-meson: ${{ steps.options.outputs.meson }}
+
+    - name: Install extra host packages
+      if: steps.options.outputs.libc != 'musl' && inputs.extra-packages != ''
+      uses: stormbytepp/githubactions/.github/actions/install-cached@master
+      with:
+        packages: ${{ inputs.extra-packages }}
+        cache-key: apt-build-extra-v1
+        unique: false
 
     ###########################################################################
     # 1a. CONFIGURE COMPILER CACHE + LAUNCHERS
     ###########################################################################
     - name: Configure compiler cache and launchers
-      if: inputs.ccache-key != ''
+      if: steps.options.outputs.compiler_cache_key != ''
       shell: bash
       run: |
         set -euo pipefail
@@ -251,6 +563,10 @@ runs:
         echo "⚙️  Configuring compiler cache & launchers..."
 
         OS="${{ runner.os }}"
+        if [ "${{ steps.options.outputs.libc }}" = "musl" ]; then
+          echo "ccache will be installed and configured inside Alpine"
+          exit 0
+        fi
 
         if [ "$OS" = "Windows" ]; then
           if [ -z "${SCCACHE_DIR:-}" ]; then
@@ -302,12 +618,12 @@ runs:
     # 1b. LLVM LLD + binutils (clang family)
     ###########################################################################
     - name: Setup LLVM linker tools (Linux clang / clang-libc++)
-      if: runner.os == 'Linux' && (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++')
+      if: runner.os == 'Linux' && steps.options.outputs.libc == 'glibc' && steps.options.outputs.compiler == 'clang'
       shell: bash
       run: |
         set -euo pipefail
 
-        echo "🔗 Setting up lld + LLVM binutils for ${{ inputs.toolchain }}..."
+        echo "🔗 Setting up lld + LLVM binutils for clang..."
 
         VER="${CLANG_VERSION:-}"
         if [ -z "$VER" ]; then
@@ -368,7 +684,7 @@ runs:
         echo "✅ Linux Clang: -fuse-ld=lld + LLVM binutils"
 
     - name: Setup LLVM linker tools (Windows clang-cl)
-      if: runner.os == 'Windows' && inputs.toolchain == 'clang-cl'
+      if: runner.os == 'Windows' && steps.options.outputs.compiler == 'clang-cl'
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
@@ -432,45 +748,47 @@ runs:
     ###########################################################################
     - name: Restore ccache
       id: restore-ccache
-      if: inputs.ccache-key != '' && (runner.os == 'Linux' || runner.os == 'macOS')
+      if: steps.options.outputs.compiler_cache_key != '' && (runner.os == 'Linux' || runner.os == 'macOS')
       uses: actions/cache/restore@v6
       with:
         path: ${{ env.CCACHE_DIR }}
         key: ${{ steps.cachekeys.outputs.save_key }}
         restore-keys: |
-          ${{ steps.cachekeys.outputs.cache_key }}-${{ github.run_id }}-
-          ${{ steps.cachekeys.outputs.cache_key }}-
+          ${{ steps.cachekeys.outputs.cache_key }}--${{ github.run_id }}-
+          ${{ steps.cachekeys.outputs.cache_key }}--
 
     - name: Restore sccache
       id: restore-sccache
-      if: inputs.ccache-key != '' && runner.os == 'Windows'
+      if: steps.options.outputs.compiler_cache_key != '' && runner.os == 'Windows'
       uses: actions/cache/restore@v6
       with:
         path: ${{ env.SCCACHE_DIR }}
         key: ${{ steps.cachekeys.outputs.save_key }}
         restore-keys: |
-          ${{ steps.cachekeys.outputs.cache_key }}-${{ github.run_id }}-
-          ${{ steps.cachekeys.outputs.cache_key }}-
+          ${{ steps.cachekeys.outputs.cache_key }}--${{ github.run_id }}-
+          ${{ steps.cachekeys.outputs.cache_key }}--
 
     ###########################################################################
     # 1d. RESTORE + PREPARE DOWNLOADS CACHE
     ###########################################################################
     - name: Restore BuildMaster data directory
       id: restore-buildmaster
-      if: inputs.buildmaster-datadir-cache-key != ''
+      if: steps.options.outputs.buildmaster_cache_key != ''
       uses: actions/cache/restore@v6
       with:
-        path: ${{ steps.buildmaster.outputs.datadir }}
+        path: ${{ steps.buildmaster.outputs.datadir }}/downloads
         key: ${{ steps.buildmaster.outputs.save_key }}
         restore-keys: |
-          ${{ steps.buildmaster.outputs.cache_key }}-${{ github.run_id }}-
-          ${{ steps.buildmaster.outputs.cache_key }}-
+          ${{ steps.buildmaster.outputs.cache_key }}--${{ github.run_id }}-
+          ${{ steps.buildmaster.outputs.cache_key }}--
 
     - name: Ensure BuildMaster data directory exists
-      if: inputs.buildmaster-datadir-cache-key != ''
+      if: steps.options.outputs.buildmaster_cache_key != ''
       shell: bash
       run: |
+        set -euo pipefail
         mkdir -p "${{ steps.buildmaster.outputs.datadir }}"
+        rm -rf "${{ steps.buildmaster.outputs.datadir }}/tmp"
         echo "📁 BUILDMASTER_DATADIR=${{ steps.buildmaster.outputs.datadir }}"
 
     ###########################################################################
@@ -481,7 +799,7 @@ runs:
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
-        $toolchain = "${{ inputs.toolchain }}"
+        $toolchain = "${{ steps.options.outputs.compiler }}"
 
         Write-Host "🧹 Sanitizing Windows PATH (toolchain=$toolchain)..."
 
@@ -577,10 +895,16 @@ runs:
     # 2. CONFIGURE
     ###########################################################################
     - name: Configure CMake (Linux/macOS)
-      if: runner.os != 'Windows'
+      if: runner.os != 'Windows' && steps.options.outputs.libc != 'musl'
       shell: bash
       env:
-        CONFIGURE_OPTIONS: ${{ inputs.configure-options }}
+        ACTION_PATH: ${{ github.action_path }}
+        CMAKE_OPTIONS: ${{ steps.options.outputs.cmake_options }}
+        COMPILER: ${{ steps.options.outputs.compiler }}
+        PGO: ${{ steps.options.outputs.pgo }}
+        LTO: ${{ steps.options.outputs.lto }}
+        INSTALL_PREFIX: ${{ steps.options.outputs.install_prefix }}
+        CXX_STDLIB: ${{ steps.options.outputs.cxx_stdlib }}
       run: |
         set -euo pipefail
 
@@ -589,11 +913,11 @@ runs:
         echo "   Source dir : ${{ inputs.source-dir }}"
         echo "   Build type : ${{ inputs.build-type }}"
         echo "   Build dir  : ${{ inputs.build-dir }}"
-        echo "   Toolchain  : ${{ inputs.toolchain }}"
+        echo "   Compiler   : ${{ steps.options.outputs.compiler }}"
         echo "────────────────────────────────────────────────────────"
 
         LAUNCHER_ARGS=()
-        if [ -n "${{ inputs.ccache-key }}" ] && command -v ccache >/dev/null 2>&1; then
+        if [ -n "${{ steps.options.outputs.compiler_cache_key }}" ] && command -v ccache >/dev/null 2>&1; then
           export CCACHE_DIR="${CCACHE_DIR:-${RUNNER_TEMP}/ccache}"
           mkdir -p "${CCACHE_DIR}"
           LAUNCHER_ARGS+=(
@@ -605,19 +929,15 @@ runs:
 
         LINKER_ARGS=()
         if [ "${{ runner.os }}" = "Linux" ]; then
-          case "${{ inputs.toolchain }}" in
-            clang|clang-libc++)
-              LINKER_ARGS+=(
-                -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
-                -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld
-                -DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld
-              )
-              if [ -n "${CMAKE_AR:-}" ]; then
-                LINKER_ARGS+=("-DCMAKE_AR=${CMAKE_AR}")
-              fi
-              echo "🔗 Using lld for toolchain=${{ inputs.toolchain }}"
-              ;;
-          esac
+          if [ "${{ steps.options.outputs.compiler }}" = clang ]; then
+            LINKER_ARGS+=(
+              -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
+              -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld
+              -DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld
+            )
+            if [ -n "${CMAKE_AR:-}" ]; then LINKER_ARGS+=("-DCMAKE_AR=${CMAKE_AR}"); fi
+            echo "🔗 Using lld for clang"
+          fi
         fi
 
         BM_ARGS=()
@@ -626,7 +946,9 @@ runs:
           echo "📁 BUILDMASTER_DATADIR=${BUILDMASTER_DATADIR}"
         fi
 
-        # shellcheck disable=SC2086
+        source "$ACTION_PATH/configure-common.sh"
+        prepare_cmake_options
+
         cmake -S "${{ inputs.source-dir }}" -B "${{ inputs.build-dir }}" \
           -G Ninja \
           -DCMAKE_BUILD_TYPE="${{ inputs.build-type }}" \
@@ -635,7 +957,7 @@ runs:
           ${LAUNCHER_ARGS[@]+"${LAUNCHER_ARGS[@]}"} \
           ${LINKER_ARGS[@]+"${LINKER_ARGS[@]}"} \
           ${BM_ARGS[@]+"${BM_ARGS[@]}"} \
-          ${CONFIGURE_OPTIONS}
+          ${CONFIGURE_ARGS[@]+"${CONFIGURE_ARGS[@]}"}
 
         echo "✅ CMake configure finished"
 
@@ -643,10 +965,14 @@ runs:
       if: runner.os == 'Windows'
       shell: pwsh
       env:
-        CONFIGURE_OPTIONS: ${{ inputs.configure-options }}
+        ACTION_PATH: ${{ github.action_path }}
+        CONFIGURE_OPTIONS: ${{ steps.options.outputs.cmake_options }}
+        PGO: ${{ steps.options.outputs.pgo }}
+        LTO: ${{ steps.options.outputs.lto }}
+        INSTALL_PREFIX: ${{ steps.options.outputs.install_prefix }}
       run: |
         $ErrorActionPreference = "Stop"
-        $toolchain = "${{ inputs.toolchain }}"
+        $toolchain = "${{ steps.options.outputs.compiler }}"
 
         Write-Host "────────────────────────────────────────────────────────"
         Write-Host "🔧 Configuring CMake (Windows)"
@@ -673,6 +999,52 @@ runs:
           $cmakeArgs.Add($a)
         }
 
+        $extraArgs = [System.Collections.Generic.List[string]]::new()
+        if (-not [string]::IsNullOrWhiteSpace($env:CONFIGURE_OPTIONS)) {
+          $parser = Join-Path $env:ACTION_PATH "parse-windows-arguments.py"
+          $json = & python $parser $env:CONFIGURE_OPTIONS "cmake-options"
+          if ($LASTEXITCODE -ne 0) { throw "Invalid cmake-options" }
+          $pendingDefinition = $false
+          foreach ($arg in (ConvertFrom-Json -InputObject ($json -join "`n") -NoEnumerate)) {
+            if ($pendingDefinition) {
+              $extraArgs.Add("-D$arg")
+              $pendingDefinition = $false
+            } elseif ($arg -eq "-D") {
+              $pendingDefinition = $true
+            } else {
+              $extraArgs.Add([string]$arg)
+            }
+          }
+          if ($pendingDefinition) { $extraArgs.Add("-D") }
+        }
+
+        foreach ($setting in @("PGO", "LTO")) {
+          $value = [Environment]::GetEnvironmentVariable($setting)
+          if ([string]::IsNullOrWhiteSpace($value)) { continue }
+          $desired = if ($value -eq "true") { "ON" } else { "OFF" }
+          $option = "ENABLE_$setting"
+          $present = $false
+          $existing = ""
+          foreach ($arg in $extraArgs) {
+            if ($arg -match "^-D$option(?::[A-Za-z]+)?=(.*)$") {
+              $existing = $Matches[1]
+              $present = $true
+            }
+          }
+          if ($present) {
+            $normalized = $existing.ToUpperInvariant()
+            switch -Regex ($normalized) {
+              '^(1|ON|YES|TRUE|Y)$' { $actual = $true; break }
+              '^(0|OFF|NO|FALSE|N|IGNORE|NOTFOUND|.*-NOTFOUND|)$' { $actual = $false; break }
+              default { throw "$option in cmake-options is not a recognized boolean: $existing" }
+            }
+            if ($actual -ne ($value -eq "true")) {
+              throw "$option in cmake-options conflicts with $($setting.ToLowerInvariant())=$value"
+            }
+          } else {
+            $cmakeArgs.Add("-D$option=$desired")
+          }
+        }
         $mtCmd = Get-Command mt.exe -ErrorAction SilentlyContinue
         $mtExe = if ($mtCmd) { ($mtCmd.Source -replace '\\', '/') } else { "mt" }
         $cmakeArgs.Add("-DCMAKE_MT=$mtExe")
@@ -737,7 +1109,7 @@ runs:
           Write-Host "Release ${bt}: no debug information flags"
         }
 
-        if ("${{ inputs.ccache-key }}" -ne "" -and (Get-Command sccache -ErrorAction SilentlyContinue)) {
+        if ("${{ steps.options.outputs.compiler_cache_key }}" -ne "" -and (Get-Command sccache -ErrorAction SilentlyContinue)) {
           Write-Host "Using sccache launcher"
           $cmakeArgs.Add("-DCMAKE_C_COMPILER_LAUNCHER=sccache")
           $cmakeArgs.Add("-DCMAKE_CXX_COMPILER_LAUNCHER=sccache")
@@ -756,29 +1128,20 @@ runs:
           Write-Host "sccache launcher disabled"
         }
 
-        $extra = $env:CONFIGURE_OPTIONS
-        if ($extra -and $extra.Trim() -ne "") {
-          foreach ($m in [regex]::Matches($extra, '("([^"]*)"|''([^'']*)''|\S+)')) {
-            $t = $m.Value
-            if ($t.Length -ge 2 -and (
-                ($t.StartsWith('"') -and $t.EndsWith('"')) -or
-                ($t.StartsWith("'") -and $t.EndsWith("'"))
-              )) {
-              $t = $t.Substring(1, $t.Length - 2)
-            }
-            if ($t -ne "") { $cmakeArgs.Add($t) }
-          }
+        foreach ($arg in $extraArgs) { $cmakeArgs.Add($arg) }
+        if (-not [string]::IsNullOrWhiteSpace($env:INSTALL_PREFIX)) {
+          $cmakeArgs.Add("-DCMAKE_INSTALL_PREFIX=$($env:INSTALL_PREFIX)")
         }
 
         Write-Host "Running: cmake $($cmakeArgs -join ' ')"
-        if ("${{ inputs.ccache-key }}" -ne "") {
+        if ("${{ steps.options.outputs.compiler_cache_key }}" -ne "") {
           & "${{ github.action_path }}/start-sccache.ps1"
         }
         try {
           & cmake @($cmakeArgs.ToArray())
           $configureExitCode = $LASTEXITCODE
         } finally {
-          if ("${{ inputs.ccache-key }}" -ne "") {
+          if ("${{ steps.options.outputs.compiler_cache_key }}" -ne "") {
             $stopOutput = & sccache --stop-server 2>&1
             if ($LASTEXITCODE -ne 0) {
               $stopOutput | ForEach-Object { Write-Host $_ }
@@ -799,7 +1162,7 @@ runs:
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
-        $toolchain = "${{ inputs.toolchain }}"
+        $toolchain = "${{ steps.options.outputs.compiler }}"
 
         Write-Host "────────────────────────────────────────────────────────"
         Write-Host "🏗️  Building with Ninja (Windows)"
@@ -874,11 +1237,11 @@ runs:
         $jobs = [Environment]::ProcessorCount
         if ($jobs -lt 1) { $jobs = 4 }
 
-        if ("${{ inputs.ccache-key }}" -ne "") {
+        if ("${{ steps.options.outputs.compiler_cache_key }}" -ne "") {
           & "${{ github.action_path }}/start-sccache.ps1"
         }
 
-        $target = "${{ inputs.target }}"
+        $target = "${{ steps.options.outputs.build_target }}"
         Write-Host "🚀 Starting build with $jobs jobs..."
         try {
           if ($target -ne "") {
@@ -890,7 +1253,7 @@ runs:
           }
           $buildExitCode = $LASTEXITCODE
         } finally {
-          if ("${{ inputs.ccache-key }}" -ne "") {
+          if ("${{ steps.options.outputs.compiler_cache_key }}" -ne "") {
             try {
               Write-Host "sccache statistics for this build (before tests):"
               & sccache --show-stats
@@ -912,9 +1275,223 @@ runs:
 
         Write-Host "✅ Build finished successfully"
 
+    - name: Build in Alpine (musl)
+      id: build-musl
+      if: runner.os == 'Linux' && steps.options.outputs.libc == 'musl'
+      shell: bash
+      env:
+        DOCKER_ARCH: ${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
+        HOST_ARCH: ${{ runner.arch }}
+        ACTION_PATH: ${{ github.action_path }}
+        COMPILER: ${{ steps.options.outputs.compiler }}
+        COMPILER_VERSION: ${{ steps.options.outputs.compiler_version }}
+        CXX_STDLIB: ${{ steps.options.outputs.cxx_stdlib }}
+        CMAKE_OPTIONS: ${{ steps.options.outputs.cmake_options }}
+        BUILD_TYPE: ${{ inputs.build-type }}
+        SOURCE_DIR: ${{ inputs.source-dir }}
+        BUILD_DIR: ${{ inputs.build-dir }}
+        BUILD_TARGET: ${{ steps.options.outputs.build_target }}
+        CTEST_ENABLED: ${{ steps.options.outputs.ctest }}
+        CTEST_OPTIONS: ${{ inputs.ctest-options }}
+        INSTALL_ENABLED: ${{ inputs.install }}
+        INSTALL_PREFIX: ${{ steps.options.outputs.install_prefix }}
+        DEPLOY: ${{ steps.options.outputs.deploy }}
+        PGO: ${{ steps.options.outputs.pgo }}
+        LTO: ${{ steps.options.outputs.lto }}
+        DOCS: ${{ inputs.docs }}
+        MESON: ${{ steps.options.outputs.meson }}
+        EXTRA_PACKAGES: ${{ inputs.extra-packages }}
+        CONTAINER_ENV: ${{ inputs.container-env }}
+        CACHE_ENABLED: ${{ steps.options.outputs.compiler_cache_key != '' }}
+        BUILDMASTER_DATADIR: ${{ steps.buildmaster.outputs.datadir || env.BUILDMASTER_DATADIR }}
+      run: |
+        set -euo pipefail
+
+        if ! command -v docker >/dev/null 2>&1; then
+          echo "::error::Docker is required to build with libc=musl"
+          exit 1
+        fi
+        case "$HOST_ARCH" in
+          X64|ARM64) ;;
+          *) echo "::error::Alpine builds require a native X64 or ARM64 runner"; exit 1 ;;
+        esac
+
+        if [[ -n "$COMPILER_VERSION" ]]; then
+          expected=15
+          [[ "$COMPILER" == clang ]] && expected=22
+          if [[ "$COMPILER_VERSION" != "$expected" ]]; then
+            echo "::error::Alpine 3.24 provides gcc ${expected} or clang 22; compiler-version=${COMPILER_VERSION} is unavailable"
+            exit 1
+          fi
+        else
+          [[ "$COMPILER" == gcc ]] && COMPILER_VERSION=15 || COMPILER_VERSION=22
+        fi
+
+        cd "$GITHUB_WORKSPACE"
+        prefix_to_check=""
+        if [[ "$INSTALL_ENABLED" == true || "$DEPLOY" == true ]]; then
+          prefix_to_check="$INSTALL_PREFIX"
+        fi
+        python3 - "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$SOURCE_DIR" "$BUILD_DIR" "$prefix_to_check" "$BUILDMASTER_DATADIR" <<'PY'
+        from pathlib import Path
+        import sys
+
+        roots = [Path(path).resolve() for path in sys.argv[1:3]]
+        for label, raw in zip(("source-dir", "build-dir", "install-prefix", "BUILDMASTER_DATADIR"), sys.argv[3:]):
+            if not raw:
+                continue
+            path = Path(raw).resolve()
+            if not any(path == root or root in path.parents for root in roots):
+                print(f"::error::{label} must be inside the workspace or runner temp for an Alpine build: {raw}", file=sys.stderr)
+                sys.exit(1)
+        PY
+
+        CACHEDIR="${CCACHE_DIR:-${RUNNER_TEMP}/ccache}"
+        ALPINE_HOME="${RUNNER_TEMP}/alpine-home"
+        mkdir -p "$CACHEDIR" "$ALPINE_HOME"
+        if [[ -n "$BUILDMASTER_DATADIR" ]]; then
+          mkdir -p "$BUILDMASTER_DATADIR/downloads"
+          rm -rf "$BUILDMASTER_DATADIR/tmp"
+        fi
+
+        docker_env=()
+        for name in CI GITHUB_ACTIONS LD_LIBRARY_PATH \
+          POSTGRES_USER POSTGRES_PASSWORD POSTGRES_PORT \
+          MARIADB_USER MARIADB_PASSWORD MARIADB_PORT \
+          MSSQL_HOST MSSQL_USER MSSQL_PASSWORD MSSQL_DATABASE MSSQL_PORT; do
+          if printenv "$name" >/dev/null; then docker_env+=(-e "$name"); fi
+        done
+        read -r -a requested_env <<< "${CONTAINER_ENV//$'\n'/ }"
+        for name in "${requested_env[@]}"; do
+          if [[ ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            echo "::error::container-env must contain environment variable names, not values: $name"
+            exit 1
+          fi
+          case "$name" in
+            ACTION_PATH|BUILDMASTER_DATADIR|BUILD_DIR|BUILD_GID|BUILD_TARGET|BUILD_TYPE|BUILD_UID|CACHE_ENABLED|CCACHE_DIR|CMAKE_OPTIONS|COMPILER|COMPILER_VERSION|CONTAINER_ENV|CTEST_ENABLED|CTEST_OPTIONS|CXX_STDLIB|DEPLOY|DOCS|EXTRA_PACKAGES|GITHUB_WORKSPACE|HOME|INSTALL_ENABLED|INSTALL_PREFIX|LTO|MESON|PATH|PGO|RUNNER_TEMP|SOURCE_DIR)
+              echo "::error::container-env cannot override the action's $name setting"
+              exit 1
+              ;;
+          esac
+          if ! printenv "$name" >/dev/null; then
+            echo "::error::Requested container environment variable is not set: $name"
+            exit 1
+          fi
+          docker_env+=(-e "$name")
+        done
+        BUILD_UID="$(id -u)"
+        BUILD_GID="$(id -g)"
+        export BUILD_UID BUILD_GID
+
+        docker run --rm -i \
+          --network host \
+          --platform "linux/${DOCKER_ARCH}" \
+          -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" \
+          -v "${RUNNER_TEMP}:${RUNNER_TEMP}" \
+          -v "${ACTION_PATH}:${ACTION_PATH}:ro" \
+          -w "$GITHUB_WORKSPACE" \
+          -e ACTION_PATH -e BUILD_UID -e BUILD_GID -e HOME="$ALPINE_HOME" \
+          -e COMPILER -e COMPILER_VERSION -e CXX_STDLIB \
+          -e CMAKE_OPTIONS -e BUILD_TYPE -e SOURCE_DIR -e BUILD_DIR \
+          -e BUILD_TARGET -e CTEST_ENABLED -e CTEST_OPTIONS \
+          -e INSTALL_ENABLED -e INSTALL_PREFIX -e DEPLOY -e PGO -e LTO \
+          -e DOCS -e MESON -e EXTRA_PACKAGES -e CACHE_ENABLED -e CCACHE_DIR="$CACHEDIR" \
+          -e BUILDMASTER_DATADIR -e RUNNER_TEMP -e GITHUB_WORKSPACE \
+          "${docker_env[@]}" \
+          alpine:3.24 /bin/sh -eu -c '
+            packages="bash build-base cmake pkgconf ca-certificates curl git zip unzip tar xz python3 py3-pip autoconf automake libtool perl openssl nasm yasm linux-headers bison flex su-exec"
+            [ "$COMPILER" != clang ] || packages="$packages clang22 lld22 llvm22 compiler-rt"
+            [ "$CXX_STDLIB" != libc++ ] || packages="$packages libc++-dev libc++-static llvm-libunwind-dev"
+            [ "$CACHE_ENABLED" != true ] || packages="$packages ccache"
+            [ "$DOCS" != true ] || packages="$packages doxygen graphviz"
+            set -f
+            set -- $packages
+            for package in $EXTRA_PACKAGES; do
+              case "$package" in
+                -*) echo "::error::Invalid extra package name: $package" >&2; exit 1 ;;
+              esac
+              set -- "$@" "$package"
+            done
+            apk add --no-cache "$@"
+            set -- ninja
+            if [ "$MESON" = true ]; then
+              set -- "$@" meson
+            fi
+            python3 -m pip install --break-system-packages --no-cache-dir "$@"
+            exec su-exec "$BUILD_UID:$BUILD_GID" /bin/bash -euo pipefail
+          ' <<'ALPINE_BUILD_SCRIPT'
+            if [[ "$COMPILER" == clang ]]; then
+              export PATH="/usr/lib/llvm22/bin:$PATH"
+              C_COMPILER=clang-22
+              CXX_COMPILER=clang++-22
+              LINKER_ARGS=(-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
+                -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld
+                -DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld
+                "-DCMAKE_AR=$(command -v llvm-ar)"
+                "-DCMAKE_RANLIB=$(command -v llvm-ranlib)")
+            else
+              C_COMPILER=gcc
+              CXX_COMPILER=g++
+              LINKER_ARGS=()
+            fi
+            cmake_args=(-S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja
+              "-DCMAKE_BUILD_TYPE=$BUILD_TYPE"
+              "-DCMAKE_C_COMPILER=$C_COMPILER"
+              "-DCMAKE_CXX_COMPILER=$CXX_COMPILER")
+            cmake_args+=("${LINKER_ARGS[@]}")
+            if [[ -n "$BUILDMASTER_DATADIR" ]]; then cmake_args+=("-DBUILDMASTER_DATADIR=$BUILDMASTER_DATADIR"); fi
+            if [[ "$CACHE_ENABLED" == true ]]; then
+              cmake_args+=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+            fi
+            source "$ACTION_PATH/configure-common.sh"
+            prepare_cmake_options
+            cmake_args+=("${CONFIGURE_ARGS[@]}")
+            cmake "${cmake_args[@]}"
+
+            if [[ "$INSTALL_ENABLED" == true || "$DEPLOY" == true ]]; then
+              configured_prefix="$INSTALL_PREFIX"
+              if [[ -z "$configured_prefix" ]]; then
+                configured_prefix="$(sed -n 's/^CMAKE_INSTALL_PREFIX:[^=]*=//p' "$BUILD_DIR/CMakeCache.txt" | tail -n 1)"
+              fi
+              if [[ -z "$configured_prefix" ]]; then
+                echo "::error::Could not determine CMAKE_INSTALL_PREFIX"
+                exit 1
+              fi
+              python3 - "$configured_prefix" "$GITHUB_WORKSPACE" "$RUNNER_TEMP" <<'PY'
+        from pathlib import Path
+        import sys
+
+        path = Path(sys.argv[1]).resolve()
+        roots = [Path(root).resolve() for root in sys.argv[2:]]
+        if not any(path == root or root in path.parents for root in roots):
+            print("::error::Alpine installation must use a prefix inside the workspace or runner temp; set install-prefix", file=sys.stderr)
+            sys.exit(1)
+        PY
+            fi
+
+            jobs="$(nproc)"
+            if [[ -n "$BUILD_TARGET" ]]; then
+              ninja -C "$BUILD_DIR" -j"$jobs" "$BUILD_TARGET"
+            else
+              ninja -C "$BUILD_DIR" -j"$jobs"
+            fi
+            if [[ "$CTEST_ENABLED" == true ]]; then
+              parse_action_arguments "$CTEST_OPTIONS" "ctest-options"
+              ctest --test-dir "$BUILD_DIR" "${PARSED_ARGS[@]}"
+            fi
+            if [[ "$INSTALL_ENABLED" == true || "$DEPLOY" == true ]]; then
+              if [[ -n "$INSTALL_PREFIX" ]]; then
+                cmake --install "$BUILD_DIR" --prefix "$INSTALL_PREFIX"
+              else
+                cmake --install "$BUILD_DIR"
+              fi
+            fi
+            if [[ "$CACHE_ENABLED" == true ]]; then ccache -s; fi
+        ALPINE_BUILD_SCRIPT
+
     - name: Build (Linux/macOS)
       id: build-unix
-      if: runner.os != 'Windows'
+      if: runner.os != 'Windows' && steps.options.outputs.libc != 'musl'
       shell: bash
       run: |
         set -euo pipefail
@@ -927,9 +1504,9 @@ runs:
 
         echo "🚀 Starting build with ${JOBS} jobs..."
 
-        if [ -n "${{ inputs.target }}" ]; then
-          echo "   Target: ${{ inputs.target }}"
-          ninja -C "${{ inputs.build-dir }}" -j"${JOBS}" "${{ inputs.target }}"
+        if [ -n "${{ steps.options.outputs.build_target }}" ]; then
+          echo "   Target: ${{ steps.options.outputs.build_target }}"
+          ninja -C "${{ inputs.build-dir }}" -j"${JOBS}" "${{ steps.options.outputs.build_target }}"
         else
           echo "   Target: all"
           ninja -C "${{ inputs.build-dir }}" -j"${JOBS}"
@@ -941,7 +1518,7 @@ runs:
     # 4. CACHE STATS
     ###########################################################################
     - name: ccache build statistics
-      if: always() && runner.os != 'Windows' && inputs.ccache-key != '' && (steps.build-unix.outcome == 'success' || steps.build-unix.outcome == 'failure')
+      if: always() && runner.os != 'Windows' && steps.options.outputs.libc != 'musl' && steps.options.outputs.compiler_cache_key != '' && (steps.build-unix.outcome == 'success' || steps.build-unix.outcome == 'failure')
       shell: bash
       run: |
         set +e
@@ -958,9 +1535,10 @@ runs:
     # 5. TESTS (optional)
     ###########################################################################
     - name: Run tests (Windows)
-      if: inputs.run-tests == 'true' && runner.os == 'Windows'
+      if: steps.options.outputs.ctest == 'true' && runner.os == 'Windows'
       shell: pwsh
       env:
+        ACTION_PATH: ${{ github.action_path }}
         CTEST_OPTIONS: ${{ inputs.ctest-options }}
       run: |
         $ErrorActionPreference = "Stop"
@@ -969,20 +1547,23 @@ runs:
         Write-Host "🧪 Running tests (Windows)"
         Write-Host "────────────────────────────────────────────────────────"
 
-        $opts = $env:CTEST_OPTIONS
-        if ($opts) {
-          ctest --test-dir "${{ inputs.build-dir }}" $opts.Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
-        } else {
-          ctest --test-dir "${{ inputs.build-dir }}" --output-on-failure
+        $opts = @()
+        if (-not [string]::IsNullOrWhiteSpace($env:CTEST_OPTIONS)) {
+          $parser = Join-Path $env:ACTION_PATH "parse-windows-arguments.py"
+          $json = & python $parser $env:CTEST_OPTIONS "ctest-options"
+          if ($LASTEXITCODE -ne 0) { throw "Invalid ctest-options" }
+          $opts = @(ConvertFrom-Json -InputObject ($json -join "`n") -NoEnumerate)
         }
+        ctest --test-dir "${{ inputs.build-dir }}" @opts
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
         Write-Host "✅ Tests finished"
 
     - name: Run tests (Linux/macOS)
-      if: inputs.run-tests == 'true' && runner.os != 'Windows'
+      if: steps.options.outputs.ctest == 'true' && runner.os != 'Windows' && steps.options.outputs.libc != 'musl'
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}
         CTEST_OPTIONS: ${{ inputs.ctest-options }}
       run: |
         set -euo pipefail
@@ -991,8 +1572,9 @@ runs:
         echo "🧪 Running tests (Linux/macOS)"
         echo "────────────────────────────────────────────────────────"
 
-        # shellcheck disable=SC2086
-        ctest --test-dir "${{ inputs.build-dir }}" ${CTEST_OPTIONS}
+        source "$ACTION_PATH/configure-common.sh"
+        parse_action_arguments "$CTEST_OPTIONS" "ctest-options"
+        ctest --test-dir "${{ inputs.build-dir }}" ${PARSED_ARGS[@]+"${PARSED_ARGS[@]}"}
 
         echo "✅ Tests finished"
 
@@ -1000,10 +1582,10 @@ runs:
     # 5c. INSTALL (optional)
     ###########################################################################
     - name: Install
-      if: inputs.install == 'true'
+      if: (inputs.install == 'true' || steps.options.outputs.deploy == 'true') && steps.options.outputs.libc != 'musl'
       shell: bash
       env:
-        INSTALL_PREFIX: ${{ inputs.install-location }}
+        INSTALL_PREFIX: ${{ steps.options.outputs.install_prefix }}
       run: |
         set -euo pipefail
 
@@ -1025,12 +1607,70 @@ runs:
 
         echo "✅ Install finished"
 
+    - name: Package release
+      if: steps.options.outputs.deploy == 'true'
+      shell: bash
+      env:
+        INSTALL_PREFIX: ${{ steps.options.outputs.install_prefix }}
+        CXX_STDLIB: ${{ steps.options.outputs.cxx_stdlib }}
+        LIBC: ${{ steps.options.outputs.libc }}
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE"
+        if [[ ! -d "$INSTALL_PREFIX" ]]; then
+          echo "::error::Install prefix does not exist: $INSTALL_PREFIX"
+          exit 1
+        fi
+        prefix_abs="$(cd "$INSTALL_PREFIX" && pwd -P)"
+        workspace_abs="$(pwd -P)"
+        if [[ "$prefix_abs" == / || "$workspace_abs" == "$prefix_abs" || "$workspace_abs" == "$prefix_abs"/* ]]; then
+          echo "::error::Install prefix must not contain the workspace root"
+          exit 1
+        fi
+        repo="${GITHUB_REPOSITORY##*/}"
+        tag="$GITHUB_REF_NAME"
+        case "$repo" in ''|.|..|*/*|*\\*) echo "::error::Invalid repository name for a release asset"; exit 1 ;; esac
+        case "$tag" in ''|.|..|*/*|*\\*) echo "::error::Tag cannot be used in a release asset name: $tag"; exit 1 ;; esac
+        case "$RUNNER_ARCH" in
+          X64) arch=x64 ;;
+          ARM64) arch=arm64 ;;
+          *) echo "::error::Unsupported release architecture: $RUNNER_ARCH"; exit 1 ;;
+        esac
+        case "$RUNNER_OS" in
+          Linux) suffix="linux-${arch}-${LIBC}-${CXX_STDLIB}" ;;
+          macOS) suffix="macos-${arch}" ;;
+          Windows) suffix="windows-${arch}" ;;
+          *) echo "::error::Unsupported release OS: $RUNNER_OS"; exit 1 ;;
+        esac
+        archive="${RUNNER_TEMP}/${repo}-${tag}-${suffix}.zip"
+        for notice in LICENSE* COPYING* THIRD-PARTY*; do
+          if [[ -f "$notice" ]]; then cp "$notice" "$INSTALL_PREFIX/"; fi
+        done
+        (cd "$INSTALL_PREFIX" && cmake -E tar cf "$archive" --format=zip -- .)
+        echo "RELEASE_ASSET=$archive" >> "$GITHUB_ENV"
+        echo "Release asset: $archive"
+
+    - name: Upload to existing GitHub release
+      if: steps.options.outputs.deploy == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        if [[ ! -f "${RELEASE_ASSET:-}" ]]; then
+          echo "::error::Release archive was not created"
+          exit 1
+        fi
+        gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null
+        gh release upload "$GITHUB_REF_NAME" "$RELEASE_ASSET" \
+          --repo "$GITHUB_REPOSITORY" --clobber
+
     ###########################################################################
     # 6. SAVE COMPILER CACHE
     ###########################################################################
     - name: Save ccache
       id: save-ccache
-      if: always() && !cancelled() && inputs.ccache-key != '' && (steps.build-unix.outcome == 'success' || steps.build-unix.outcome == 'failure')
+      if: always() && !cancelled() && steps.options.outputs.compiler_cache_key != '' && (steps.build-unix.outcome == 'success' || steps.build-unix.outcome == 'failure' || steps.build-musl.outcome == 'success' || steps.build-musl.outcome == 'failure')
       continue-on-error: true
       uses: actions/cache/save@v6
       with:
@@ -1039,7 +1679,7 @@ runs:
 
     - name: Save sccache
       id: save-sccache
-      if: always() && !cancelled() && runner.os == 'Windows' && inputs.ccache-key != '' && steps.build-windows.outputs.sccache-ready == 'true'
+      if: always() && !cancelled() && runner.os == 'Windows' && steps.options.outputs.compiler_cache_key != '' && steps.build-windows.outputs.sccache-ready == 'true'
       continue-on-error: true
       uses: actions/cache/save@v6
       with:
@@ -1051,11 +1691,11 @@ runs:
     ###########################################################################
     - name: Save BuildMaster data directory
       id: save-buildmaster
-      if: always() && !cancelled() && inputs.buildmaster-datadir-cache-key != '' && steps.buildmaster.outcome == 'success'
+      if: always() && !cancelled() && steps.options.outputs.buildmaster_cache_key != '' && steps.buildmaster.outcome == 'success'
       continue-on-error: true
       uses: actions/cache/save@v6
       with:
-        path: ${{ steps.buildmaster.outputs.datadir }}
+        path: ${{ steps.buildmaster.outputs.datadir }}/downloads
         key: ${{ steps.buildmaster.outputs.save_key }}
 
     ###########################################################################

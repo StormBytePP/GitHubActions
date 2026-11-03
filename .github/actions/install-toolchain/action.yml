@@ -54,6 +54,15 @@ runs:
         VER="${{ inputs.version }}"
         OS="${{ runner.os }}"
 
+        if [[ "$OS" == "Windows" && "${{ runner.arch }}" != "X64" ]]; then
+          echo "::error::Windows toolchains are supported only on X64"
+          exit 1
+        fi
+        if [[ "$OS" == "Windows" && "$TOOLCHAIN" != "msvc" && "$TOOLCHAIN" != "clang-cl" ]]; then
+          echo "::error::Windows supports toolchain=msvc or toolchain=clang-cl"
+          exit 1
+        fi
+
         case "$TOOLCHAIN" in
           gcc)
             echo "GCC_VERSION=${VER:-16}" >> "$GITHUB_ENV"
@@ -91,13 +100,17 @@ runs:
           ninja-build
           build-essential
           cmake
+          pkg-config autoconf automake libtool
+          perl openssl nasm yasm bison flex
+          ca-certificates curl git zip unzip xz-utils
           ${{ inputs.toolchain == 'gcc' && format('gcc-{0} g++-{0}', env.GCC_VERSION) || '' }}
-          ${{ (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++') && format('clang-{0} clang++-{0} lld-{0} llvm-{0}', env.CLANG_VERSION) || '' }}
+          ${{ (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++') && format('clang-{0} clang++-{0} lld-{0} llvm-{0} libclang-rt-{0}-dev', env.CLANG_VERSION) || '' }}
           ${{ inputs.toolchain == 'clang-libc++' && format('libc++-{0}-dev libc++abi-{0}-dev libunwind-{0}-dev', env.CLANG_VERSION) || '' }}
           ${{ inputs.ccache-key != '' && 'ccache' || '' }}
           ${{ inputs.docs == 'true' && 'doxygen graphviz' || '' }}
-        cache-key: apt-toolchain-${{ inputs.toolchain }}-${{ env.TOOLCHAIN_VERSION }}-v5
-        unique: true
+        cache-key: apt-toolchain-${{ inputs.toolchain }}-${{ env.TOOLCHAIN_VERSION }}-v7
+        libc: glibc
+        unique: false
 
     - name: Register compiler alternatives (Linux)
       if: runner.os == 'Linux'
@@ -284,7 +297,7 @@ runs:
 
         $PY -m pip install --force-reinstall --no-cache-dir "$MESON_SPEC"
 
-        SCRIPTS="$($PY -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
+        SCRIPTS="$($PY -c 'import sysconfig; print(sysconfig.get_path("scripts"))' | tr -d '\r')"
         if [ -n "$SCRIPTS" ] && [ -d "$SCRIPTS" ]; then
           echo "$SCRIPTS" >> "$GITHUB_PATH"
           export PATH="$SCRIPTS:$PATH"
@@ -322,22 +335,21 @@ runs:
         $PY -m pip install --upgrade pip
         $PY -m pip install --force-reinstall --no-cache-dir ninja
 
-        BIN_DIR="$($PY -c 'import ninja; print(ninja.BIN_DIR)')"
+        BIN_DIR="$($PY -c 'import ninja; print(ninja.BIN_DIR)' | tr -d '\r')"
         if [ -z "$BIN_DIR" ] || [ ! -d "$BIN_DIR" ]; then
           echo "❌ ninja.BIN_DIR missing after pip install"
           exit 1
         fi
 
-        # Real binary first. Scripts/ninja.exe is the wheel launcher; CMake
-        # CreateProcess cannot use it as CMAKE_MAKE_PROGRAM.
-        echo "$BIN_DIR" >> "$GITHUB_PATH"
-        export PATH="$BIN_DIR:$PATH"
-
-        SCRIPTS="$($PY -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
+        SCRIPTS="$($PY -c 'import sysconfig; print(sysconfig.get_path("scripts"))' | tr -d '\r')"
         if [ -n "$SCRIPTS" ] && [ -d "$SCRIPTS" ]; then
           echo "$SCRIPTS" >> "$GITHUB_PATH"
           export PATH="$PATH:$SCRIPTS"
         fi
+
+        # The runner prepends later GITHUB_PATH entries first.
+        echo "$BIN_DIR" >> "$GITHUB_PATH"
+        export PATH="$BIN_DIR:$PATH"
 
         echo "ninja.BIN_DIR: $BIN_DIR"
         echo "ninja on PATH: $(command -v ninja || echo none)"

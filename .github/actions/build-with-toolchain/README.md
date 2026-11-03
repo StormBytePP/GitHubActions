@@ -1,236 +1,221 @@
 # Build with Toolchain
 
-High-level composite action that:
-
-1. Installs the requested compiler toolchain
-2. Builds the project with **CMake + Ninja** (no third-party build action)
-3. Saves the compiler cache **after** the real compilation
-
-This is the recommended way to build projects when you want transparent compiler caching without managing cache save/restore in every workflow.
-
-## Author
-
-David C. Manuelda  
-[StormByte@gmail.com](mailto:StormByte@gmail.com)
-
-## Branding
-
-| Property | Value     |
-|----------|-----------|
-| Icon     | `package` |
-| Color    | `blue`    |
+Composite action for configuring and building a CMake project with Ninja. It can
+run tests, install to a prefix, cache compiler and BuildMaster downloads, and
+upload an installed package to an existing GitHub tag release.
 
 ## Inputs
 
-| Name                 | Required | Default     | Description |
-|----------------------|----------|-------------|-------------|
-| `toolchain`          | **Yes**  | —           | Toolchain to use: `gcc`, `clang`, `clang-libc++` (Linux/macOS) or `msvc`, `clang-cl` (Windows). |
-| `ccache-key`         | No       | `""`        | Base cache key for ccache / sccache. Leave empty to disable compiler caching. |
-| `cache-scope`        | No       | `""`        | Extra namespace per matrix cell or parallel job. Set this when cells otherwise share the OS, toolchain, job ID and `ccache-key`. |
-| `buildmaster-datadir-cache-key` | No | `""` | Cache key for BuildMaster's data directory. Empty skips it. Non-empty restores that folder and passes it as `-DBUILDMASTER_DATADIR`. |
-| `build-dir`          | No       | `"build"`   | CMake build directory. |
-| `build-type`         | No       | `"Debug"`   | CMake build type (`Debug`, `Release`, …). |
-| `configure-options`  | No       | `""`        | Extra options passed to CMake configure. |
-| `target`             | No       | `""`        | Optional CMake target to build. Empty = build all. |
-| `run-tests`          | No       | `"false"`   | Whether to run `ctest` after the build. |
-| `install`            | No       | `"false"`   | Whether to run `cmake --install` after the build and tests. |
-| `install-location`   | No       | `""`        | Prefix for that install (`--prefix`). Empty keeps the configured prefix. |
-| `ctest-options`      | No       | `"--output-on-failure"` | Extra options for `ctest`. |
-| `version`            | No       | `""`        | Optional major version for gcc/clang. |
-| `docs`               | No       | `"false"`   | Install documentation tools (doxygen + graphviz). |
-| `install-meson`      | No       | `"true"`    | Install Meson 1.10.2. |
+| Input | Default | Description |
+|---|---:|---|
+| `compiler` | — | Required: `gcc`, `clang`, `msvc`, or `clang-cl` (Windows only). |
+| `compiler-version` | platform default | Requested GCC/Clang major version. Alpine 3.24 uses GCC 15 or Clang 22. |
+| `cxx-stdlib` | platform default | C++ runtime: `libstdc++` or `libc++`. Independent of compiler selection; Clang with `libstdc++` is supported. |
+| `libc` | `glibc` | Linux runtime: `glibc` or `musl`. musl uses an Alpine 3.24 container on the native Linux runner architecture. |
+| `compiler-cache-key` | `""` | Cache namespace; empty disables ccache/sccache. |
+| `compiler-cache-scope` | `""` | Additional per-matrix/per-job cache namespace. |
+| `buildmaster-cache-key` | `""` | BuildMaster downloads-cache namespace; empty disables it. |
+| `source-dir` | `.` | CMake source directory. |
+| `build-dir` | `build` | CMake build directory. |
+| `build-type` | `Debug` | CMake build type. |
+| `cmake-options` | `""` | Extra CMake configure arguments. |
+| `build-target` | `""` | Optional Ninja target; empty builds all targets. |
+| `ctest` | `false` | Run CTest after the build. |
+| `ctest-options` | `""` | Extra CTest arguments. |
+| `install` | `false` | Run `cmake --install` after build/tests. |
+| `install-prefix` | `""` | Sets `CMAKE_INSTALL_PREFIX`; does not itself run installation. |
+| `deploy` | `false` | Installs and uploads a ZIP to the existing GitHub release for the current tag. Requires `install-prefix` and `contents: write`. |
+| `docs` | `false` | Install Doxygen and Graphviz where supported. |
+| `meson` | `true` | Install Meson. |
+| `extra-packages` | `""` | Additional packages in the build environment, using native package names. |
+| `container-env` | `""` | Additional host environment variable **names** to pass into Alpine, separated by whitespace. |
+| `pgo` | unchanged | `true`/`false` sets `ENABLE_PGO=ON/OFF`. Empty leaves the CMake option unchanged. |
+| `lto` | unchanged | `true`/`false` sets `ENABLE_LTO=ON/OFF`. Empty leaves the CMake option unchanged. |
+
+`pgo` or `lto` fails early if `cmake-options` sets the same option to the
+opposite value. These inputs are intended for projects that define
+`ENABLE_PGO` and `ENABLE_LTO`. `cmake-options` and `ctest-options` accept
+shell-style quoting; unbalanced quotes fail rather than being ignored.
+On Windows, backslashes are always literal so native paths remain intact; use
+single or double quotes to group arguments rather than backslash escapes.
+
+The action still accepts the old input names (`toolchain`, `version`,
+`ccache-key`, `cache-scope`, `buildmaster-datadir-cache-key`,
+`configure-options`, `target`, `run-tests`, `install-location`, and
+`install-meson`) as compatibility aliases. Prefer the canonical names above.
+
+## Toolchain and runtime behavior
+
+- Compiler selection and C++ standard-library selection are independent.
+  `compiler: clang` with `cxx-stdlib: libstdc++` does not switch to GCC.
+- For Clang, the action passes `-stdlib=` through C++ configuration and
+  `CMAKE_CXX_STANDARD_LIBRARIES`, including for BuildMaster-managed builds.
+- Linux/glibc toolchains use the runner's Ubuntu environment. For the StormByte
+  glibc baseline, callers should explicitly use `ubuntu-26.04` or
+  `ubuntu-26.04-arm`; do not use `ubuntu-latest`. Ubuntu 26.04 provides glibc
+  2.43, the conservative minimum for this build baseline.
+- Linux/musl builds run in `alpine:3.24` on a native Linux x64/ARM64 runner.
+  Alpine 3.24 provides musl 1.2.6. The action does not cross-compile.
+- Windows Debug and RelWithDebInfo keep the existing `/Z7` behavior for
+  sccache compatibility. `msvc-embedded-debug` remains a deprecated no-op.
+  Windows ARM64 is not supported.
+
+Installing a project does not automatically bundle the selected C++ standard
+library, the C runtime, or other system dependencies. Target systems must
+provide compatible runtimes in addition to the stated C-library baseline.
+
+### Packages and Alpine isolation
+
+The Ubuntu toolchain includes the common source-build tools, including Perl,
+OpenSSL, NASM, YASM, Flex, Bison, pkg-config, Autotools, and the Clang profile
+runtime. Alpine installs their native equivalents, an actual Ninja binary,
+and, for Clang, compiler-rt and the matching LLVM tools. Meson and Doxygen
+remain controlled by `meson` and `docs`.
+
+Use `extra-packages` for project-specific dependencies: they are installed
+with APT, apk, Homebrew, or Chocolatey for the selected build environment.
+Package names can differ between distributions. In particular, packages
+installed on the Ubuntu host before a musl build are **not** available inside
+Alpine. For example, an Alpine `SYSTEM` database build can use
+`sqlite-dev postgresql16-dev mariadb-connector-c-dev freetds-dev`; Ubuntu uses
+different development-package names.
+
+Alpine mounts the workspace, runner temp directory, and this action. Source,
+build, and BuildMaster data paths must be within the workspace or runner temp
+directory. When installation is enabled, its destination must also be within
+one of those directories; otherwise installation fails instead of writing to a
+disposable container. A configuration-only `install-prefix` can point
+elsewhere. Compilation and installation run as the runner's UID/GID, not root.
+
+The container uses the Linux host network so tests and PGO training can reach
+services exposed on `localhost`. `CI`, `GITHUB_ACTIONS`, `LD_LIBRARY_PATH`,
+and the existing `POSTGRES_*`, `MARIADB_*`, and `MSSQL_*` test variables are
+forwarded when set. Use `container-env` for other variables; specify their
+names, not their values. Requested names must exist, and action-owned
+variables cannot be overridden. Other host variables and credentials are not
+forwarded automatically.
+
+The [official SQL Server container images](https://learn.microsoft.com/en-us/sql/linux/containers/deploy?view=sql-server-ver17)
+are supported only on x86-64 Linux hosts. Database tests on an ARM64 runner
+therefore need a reachable x86-64 SQL Server; installing packages in Alpine
+does not provide one.
+
+## Caching
+
+Compiler cache keys include OS, runner architecture, libc, compiler and version,
+C++ standard library, build type, PGO/LTO settings, job, namespace, and optional
+scope. BuildMaster keys use the same platform/build-variant dimensions and also
+include job, namespace, and optional scope. Each action run saves its own
+snapshot; old snapshots are removed only for that exact key and ref, and only
+after the replacement is visible in the Actions cache API. Snapshot delimiters
+also prevent a restore from matching a longer, differently scoped key. A
+SHA-256 of the unsanitized identity keeps distinct namespaces and scopes from
+colliding when punctuation is normalized in the readable part of a key.
+
+BuildMaster caches only `<BUILDMASTER_DATADIR>/downloads`. Its `tmp/` directory
+is removed before restore and again after restore, so temporary work is never
+reused or saved.
+
+The calling workflow needs `actions: write` for old-cache cleanup. Deploying
+also requires `contents: write`:
+
+```yaml
+permissions:
+  actions: write
+  contents: write
+```
+
+### CI example
+
+```yaml
+- uses: stormbytepp/githubactions/.github/actions/build-with-toolchain@master
+  with:
+    compiler: clang
+    cxx-stdlib: libc++
+    libc: glibc
+    compiler-cache-key: v1
+    build-type: Release
+    pgo: false
+    lto: false
+    cmake-options: -DENABLE_TEST=ON
+    ctest: true
+```
+
+### Alpine/musl example
+
+```yaml
+- uses: stormbytepp/githubactions/.github/actions/build-with-toolchain@master
+  with:
+    compiler: gcc
+    libc: musl
+    extra-packages: sqlite-dev
+    compiler-cache-key: v1
+    build-type: Release
+    ctest: true
+```
+
+### Deploy an installed package
+
+The tag release must already exist. The action does not create releases.
+
+```yaml
+- uses: stormbytepp/githubactions/.github/actions/build-with-toolchain@master
+  with:
+    compiler: clang
+    libc: glibc
+    build-type: Release
+    install-prefix: package
+    deploy: true
+```
+
+Asset names preserve the repository and tag:
+
+- Linux: `<repository>-<tag>-linux-<x64|arm64>-<glibc|musl>-<libstdc++|libc++>.zip`
+- macOS: `<repository>-<tag>-macos-<x64|arm64>.zip`
+- Windows: `<repository>-<tag>-windows-x64.zip`
+
+Compiler names and versions are deliberately not part of the asset name.
+Do not deploy two builds with the same OS, architecture, libc, and standard
+library to the same tag: the later upload replaces the first. Existing
+`LICENSE*`, `COPYING*`, and `THIRD-PARTY*` files from the workspace are
+included in the ZIP. A prefix containing the workspace root is rejected.
 
 ## Outputs
 
-| Name           | Description |
-|----------------|-------------|
-| `c_compiler`   | Selected C compiler |
-| `cxx_compiler` | Selected C++ compiler |
+| Output | Description |
+|---|---|
+| `c_compiler` | Selected C compiler. For musl, the name is the compiler inside Alpine (`gcc` or `clang-22`). |
+| `cxx_compiler` | Selected C++ compiler. For musl, the name is the compiler inside Alpine (`g++` or `clang++-22`). |
 
-## How caching works
-
-| Platform | Tool | Notes |
-|----------|------|--------|
-| **Linux / macOS** | **ccache** | Wrappers on `PATH` |
-| **Windows** | **sccache** | Via `CMAKE_*_COMPILER_LAUNCHER=sccache` |
-| **Any** | **BuildMaster datadir** | Only when `buildmaster-datadir-cache-key` is set. The folder is `${{ runner.temp }}/buildmaster-datadir` and CMake receives `-DBUILDMASTER_DATADIR`. The string is the cache key; include the OS if two jobs must not share downloads. |
-
-The action:
-
-1. Restores the compiler cache (if any)
-2. Configures and builds with CMake + Ninja
-3. Prints cache statistics (hits / misses)
-4. Saves the updated cache after a build attempt, including useful objects from a failed build or when later tests fail. Cancelled jobs and Windows builds whose cache could not be flushed do not save it.
-5. Removes older snapshots **only on the current Git ref**, and only after confirming the replacement exists in the cache API. Caches from other branches, PRs or tags, newer concurrent uploads, and other matrix scopes are preserved.
-
-Cache keys include the OS, toolchain, `ccache-key`, job ID and optional `cache-scope`.
-Each snapshot adds the run ID and attempt. Restore first looks for the current
-snapshot, then earlier attempts of the run, then the latest matching snapshot
-visible to the current ref. GitHub's branch/tag cache visibility rules still apply:
-a release tag must not delete the default branch's snapshot just because it restored it.
-
-On Windows, Debug and RelWithDebInfo builds use
-`CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded` (`/Z7`) and default CMP0141 to NEW.
-This avoids the shared compiler PDB problem with sccache. Project policies,
-target-specific flags and `configure-options` can override these defaults; check
-the actual compile commands if sccache reports non-cacheable calls.
-
-The Windows server starts inside each compilation step (configure and build).
-It is stopped in that same step to finish cache writes before the step exits.
-Only the build prints sccache statistics, including when Ninja fails, before the
-server stops. Restore, configure, tests and install do not print empty or duplicate
-sccache statistics; tests do not start a server. The executable is installed under
-`${{ runner.temp }}/sccache-bin`, separately from the default cache directory
-`${{ runner.temp }}/sccache`. Old snapshots may still contain the previously bundled
-executable; changing `ccache-key` once creates a fresh namespace if desired.
-
-### Interpreting Windows performance
-
-- A restored archive is not a compiler cache hit. Check **Cache hits**, **Cache
-  misses**, **Non-cacheable calls**, read/write errors and their reasons in the
-  build statistics.
-- sccache 0.10.0's direct/preprocessor cache is implemented for GCC and Clang,
-  not the MSVC-style driver path used by `cl` and `clang-cl`. Even if the global
-  statistics say direct mode is enabled, Windows cache hits still incur
-  preprocessing and hashing overhead.
-- Linking (including LTO), configure, tool installation, downloads and tests are
-  not cached by the compiler cache. Compare the Ninja build time, not just the
-  entire composite action's duration.
-- A persistent VM may also reuse Ninja outputs and already-built dependencies.
-  Hosted runners start with a fresh build tree. Compiler/SDK updates, changed
-  flags, source paths or generated headers can also cause legitimate misses.
-- Dependencies built outside CMake's compiler launchers do not automatically
-  benefit from sccache. Check those build commands separately.
-
-## Usage examples
-
-### Basic Linux matrix
-
-```yaml
-- name: Build with toolchain
-  uses: stormbytepp/githubactions/.github/actions/build-with-toolchain@master
-  with:
-    toolchain: ${{ matrix.compiler }}
-    ccache-key: ${{ matrix.compiler }}-v1
-    build-type: Debug
-    configure-options: -DENABLE_TEST=ON
-    run-tests: true
-```
-
-### Windows MSVC
-
-```yaml
-- name: Build with toolchain
-  uses: stormbytepp/githubactions/.github/actions/build-with-toolchain@master
-  with:
-    toolchain: msvc
-    ccache-key: msvc-v1
-    build-type: Release
-    configure-options: -DENABLE_TEST=ON
-    run-tests: true
-```
-
-### Install into a prefix
-
-```yaml
-- name: Build with toolchain
-  uses: stormbytepp/githubactions/.github/actions/build-with-toolchain@master
-  with:
-    toolchain: clang
-    build-type: Release
-    install: true
-    install-location: ${{ runner.temp }}/stormbyte
-```
-
-### Clang + libc++ with ASAN
-
-```yaml
-- name: Build with toolchain
-  uses: stormbytepp/githubactions/.github/actions/build-with-toolchain@master
-  with:
-    toolchain: clang-libc++
-    ccache-key: clang-libc++-v1
-    configure-options: >-
-      -DENABLE_ASAN=ON
-      -DENABLE_TEST=ON
-      -DCMAKE_CXX_FLAGS=-stdlib=libc++
-    run-tests: true
-```
-
-## Full workflow example
-
-```yaml
-name: Compile & Test
-
-permissions:
-  actions: write
-  contents: read
-
-on:
-  push:
-    branches: [master]
-  pull_request:
-    branches: [master]
-
-jobs:
-  build-linux:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        compiler: [gcc, clang, clang-libc++]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-
-      - uses: stormbytepp/githubactions/.github/actions/build-with-toolchain@master
-        with:
-          toolchain: ${{ matrix.compiler }}
-          ccache-key: ${{ matrix.compiler }}-v1
-          configure-options: -DENABLE_TEST=ON
-          run-tests: true
-
-  build-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-
-      - uses: stormbytepp/githubactions/.github/actions/build-with-toolchain@master
-        with:
-          toolchain: msvc
-          ccache-key: msvc-v1
-          configure-options: -DENABLE_TEST=ON
-          run-tests: false
-
-      # If tests need DLLs from the build tree:
-      - name: Add DLL directory to PATH
-        shell: pwsh
-        run: |
-          echo "${{ github.workspace }}\build\lib" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Run unit tests
-        shell: pwsh
-        run: |
-          ctest --output-on-failure --test-dir "${{ github.workspace }}\build\test"
-```
-
-## Notes
-
-- Depends on `install-toolchain` for installation; compiler cache restore/save is managed here.
-- The **save** of the compiler cache happens in this action, after the build.
-- Calling workflows need `permissions: actions: write` for old-cache cleanup. Cache restore/save itself does not require that permission; read-only PR jobs may skip cleanup with a warning.
-- APT package caching is handled by the underlying `install-cached` action.
-- No dependency on `ashutoshvarma/action-cmake-build`; configure/build/test are done with plain `cmake` / `ctest`.
-
-## External actions used
+## External actions
 
 - `stormbytepp/githubactions/.github/actions/install-toolchain`
 - `actions/cache/restore@v6` and `actions/cache/save@v6`
-- `actions/github-script@v9`
+- `actions/github-script@v9` for safe cache snapshot cleanup
+
+## Tests
+
+From the repository root, run the focused tests with:
+
+```sh
+node --test .github/actions/build-with-toolchain/*.test.cjs
+```
+
+Docker integration tests are opt-in. The Alpine test builds all supported
+compiler/standard-library combinations on the native x64 or ARM64 host. The
+Ubuntu test exercises the host toolchain, build, and documentation steps:
+
+```sh
+RUN_UBUNTU_INTEGRATION=1 node --test .github/actions/build-with-toolchain/ubuntu.integration.test.cjs
+RUN_ALPINE_INTEGRATION=1 node --test .github/actions/build-with-toolchain/alpine.integration.test.cjs
+RUN_POWERSHELL_INTEGRATION=1 node --test .github/actions/build-with-toolchain/powershell.integration.test.cjs
+```
+
+Set `STORMBYTE_PGO_CMAKE` to a StormByte project's `cmake/pgo.cmake` to test
+its actual PGO training pipeline in the Linux tests. Without it, the fixtures
+check Clang profile instrumentation. The PowerShell container checks script and
+argument behavior; it does not replace tests on a real Windows runner.
 
 ## License
 
-This repository is licensed under the **MIT License**.  
-See [`LICENSE.txt`](LICENSE.txt) at the repository root for the full text.
+MIT. See [`LICENSE.txt`](../../../LICENSE.txt) at the repository root.

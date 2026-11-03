@@ -1,47 +1,49 @@
-# GitHub Actions and Reusable Workflows
+# StormByte GitHub Actions
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.txt)
 
-This repository contains composite GitHub Actions and reusable workflows used by StormByte projects for CI tasks such as installing toolchains, caching packages, and generating documentation.
+Composite actions and reusable workflows for StormByte repositories.
 
-Included resources (links to their READMEs)
-- Actions:
-  - [.github/actions/install-toolchain/README.md](.github/actions/install-toolchain/README.md) — Installs and configures compiler toolchains (gcc/clang/MSVC).
-  - [.github/actions/install-cached/README.md](.github/actions/install-cached/README.md) — Installs and caches system packages (APT/Chocolatey).
-  - [.github/actions/generate-doc/README.md](.github/actions/generate-doc/README.md) — Builds project documentation and prepares a Pages artifact.
-- Reusable workflows:
-  - [.github/workflows/README.md](.github/workflows/README.md) — Reusable workflows (e.g., generate-and-deploy-docs) for calling the actions above.
+## Actions
 
-See each linked README for full usage, inputs, and external dependencies.
+- [Build with Toolchain](.github/actions/build-with-toolchain/README.md) — CMake/Ninja build, compiler and BuildMaster caches, tests, installation, and release deployment.
+- [Install Compiler Toolchain](.github/actions/install-toolchain/README.md) — Install GCC, Clang, MSVC, or clang-cl and build tools.
+- [Cache and Install Packages](.github/actions/install-cached/README.md) — Install system packages with architecture- and libc-scoped APT caches.
+- [Update APT lists](.github/actions/update-apt-cached/README.md) — Refresh and cache Linux package indexes.
+- [Generate Documentation](.github/actions/generate-doc/README.md) — Build project documentation and prepare a Jekyll site for Pages.
+- [Checkout Cached](.github/actions/checkout-cached/README.md) — Checkout repositories with cached submodules.
 
-License
--------
-This repository is licensed under the MIT License — see `LICENSE.txt` at the repository root.
+## Reusable workflows
 
-Examples
---------
-Save updated ccache only on successful job:
+- [Workflow documentation](.github/workflows/README.md)
+- [Generate and deploy documentation](.github/workflows/generate-and-deploy-docs.yml)
 
-```yaml
-# Place this after your build steps so the cache contains the final compiled artifacts.
-- name: Save updated ccache (only on success)
-  if: ${{ success() && env.CCACHE_FULL_KEY != '' }}
-  uses: actions/cache@v4
-  with:
-    path: ~/.ccache
-    key: ${{ env.CCACHE_FULL_KEY }}
-```
+## Linux build baseline
 
-Notes:
-- `success()` ensures the step runs only when the job completes successfully (avoids saving partial caches on failure).
-- `env.CCACHE_FULL_KEY` is produced by the `install-toolchain` action when you pass `ccache-key` and the action computes the full key.
+The build action supports `glibc` on Ubuntu runners and `musl` in an Alpine
+3.24 container on native Linux x64/ARM64 runners. For StormByte's glibc
+baseline, callers should select `ubuntu-26.04` or `ubuntu-26.04-arm`
+explicitly rather than `ubuntu-latest`.
 
-- **Permission required for overwrite:** The `install-toolchain` action can delete an existing cache entry via the GitHub API before saving to force an overwrite. To allow this the workflow that calls the action must grant the `GITHUB_TOKEN` write access to actions caches. Add the following at the top of your workflow file:
+Ubuntu 26.04 provides glibc 2.43 and Alpine 3.24 provides musl 1.2.6. Treat
+those versions as conservative C-library baselines for their respective
+artifacts; other dynamic dependencies, including the selected C++ standard
+library, must also be available on the target system. The actions do not
+automatically bundle those system runtimes.
 
-```yaml
-permissions:
-  actions: write
-```
+The build action installs common source-build tools and accepts
+platform-specific extra packages. Alpine builds run as the runner user with
+host networking for local test services; their packages and environment are
+separate from the Ubuntu host.
 
-- **Notes on safety:** Deleting and re-creating caches requires `actions: write` and can race if multiple runs share the same key. If you prefer a safer approach, include a content hash or a run-unique suffix in the cache key so saves always create a new entry.
+The action manages compiler-cache and BuildMaster download snapshots per build
+variant. Calling workflows need `actions: write` for old snapshot cleanup.
+Release deployment additionally requires `contents: write` and an existing
+tag release.
 
+See the action-specific READMEs for input contracts, examples, cache behavior,
+and permissions.
+
+## License
+
+MIT. See [LICENSE.txt](LICENSE.txt).
