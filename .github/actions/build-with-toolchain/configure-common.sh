@@ -1,7 +1,10 @@
 parse_action_arguments() {
-  local input="$1" label="$2" parser_pid arg
+  local input="$1" label="$2" parsed arg
   PARSED_ARGS=()
-  exec 3< <(python3 -c '
+  # A temporary file instead of process substitution: macOS /bin/bash 3.2
+  # cannot wait for a process substitution to read its exit status.
+  parsed="$(mktemp)"
+  if ! python3 -c '
 import shlex
 import sys
 
@@ -12,16 +15,15 @@ except ValueError as error:
     sys.exit(2)
 for arg in args:
     sys.stdout.buffer.write(arg.encode() + b"\0")
-' "$input")
-  parser_pid=$!
-  while IFS= read -r -d '' arg <&3; do
-    PARSED_ARGS+=("$arg")
-  done
-  exec 3<&-
-  if ! wait "$parser_pid"; then
+' "$input" > "$parsed"; then
+    rm -f "$parsed"
     echo "::error::Invalid ${label}" >&2
     return 1
   fi
+  while IFS= read -r -d '' arg; do
+    PARSED_ARGS+=("$arg")
+  done < "$parsed"
+  rm -f "$parsed"
 }
 
 CPU_FLAG_PATTERN='(^|[[:space:]])(-march=|-mcpu=|[/-]arch:)'

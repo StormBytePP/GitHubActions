@@ -164,6 +164,11 @@ test("the shared parser preserves quoted CTest arguments", () => {
   assert.deepEqual(args(result), ["--output-on-failure", "-R", "test name"]);
 });
 
+test("the helper avoids process substitution unsupported by macOS bash 3.2", () => {
+  const source = require("node:fs").readFileSync(helper, "utf8");
+  assert.doesNotMatch(source, /<\(/);
+});
+
 test("cpu-baseline is appended to CFLAGS, CXXFLAGS and explicit CMake flags", () => {
   const plain = runWithFlags({ CPU_FLAGS: "-march=x86-64-v3", CFLAGS: "-pipe" });
   assert.deepEqual(args(plain), ["CFLAGS=-pipe -march=x86-64-v3", "CXXFLAGS=-march=x86-64-v3"]);
