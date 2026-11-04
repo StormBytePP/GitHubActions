@@ -100,7 +100,10 @@ int main() {
   const char* host = std::getenv("MSSQL_HOST");
   const char* port = std::getenv("MSSQL_PORT");
   const char* extra = std::getenv("ACTION_TEST_ENV");
-  if (!host || std::string(host) != "127.0.0.1" || !port || !extra || std::string(extra) != "forwarded") return 1;
+  const char* cxx = std::getenv("CXX");
+  const char* expectedCxx = std::getenv("ACTION_TEST_CXX");
+  if (!host || std::string(host) != "127.0.0.1" || !port || !extra || std::string(extra) != "forwarded"
+      || !cxx || !expectedCxx || std::string(cxx) != expectedCxx) return 1;
   sockaddr_in address{};
   address.sin_family = AF_INET;
   address.sin_port = htons(std::atoi(port));
@@ -127,11 +130,11 @@ exec "$1"
 
     const script = step(path.join(__dirname, "action.yml"), "Build in Alpine (musl)");
     for (const variant of [
-      { name: "gcc-libstdcxx", compiler: "gcc", version: "15", stdlib: "libstdc++", pgo: false, docs: true, meson: true },
-      { name: "gcc-config-only", compiler: "gcc", version: "15", stdlib: "libstdc++", pgo: false, install: false },
-      { name: "gcc-pgo-libstdcxx", compiler: "gcc", version: "15", stdlib: "libstdc++", pgo: true },
-      { name: "clang-libstdcxx", compiler: "clang", version: "22", stdlib: "libstdc++", pgo: true },
-      { name: "clang-libcxx", compiler: "clang", version: "22", stdlib: "libc++", pgo: true }
+      { name: "gcc-libstdcxx", compiler: "gcc", cxx: "g++", version: "15", stdlib: "libstdc++", pgo: false, docs: true, meson: true },
+      { name: "gcc-config-only", compiler: "gcc", cxx: "g++", version: "15", stdlib: "libstdc++", pgo: false, install: false },
+      { name: "gcc-pgo-libstdcxx", compiler: "gcc", cxx: "g++", version: "15", stdlib: "libstdc++", pgo: true },
+      { name: "clang-libstdcxx", compiler: "clang", cxx: "clang++-22", version: "22", stdlib: "libstdc++", pgo: true },
+      { name: "clang-libcxx", compiler: "clang", cxx: "clang++-22", version: "22", stdlib: "libc++", pgo: true }
     ]) {
       const buildDir = `build-${variant.name}`;
       const installDir = variant.install === false
@@ -151,11 +154,11 @@ exec "$1"
         INSTALL_ENABLED: String(variant.install !== false), INSTALL_PREFIX: installDir, DEPLOY: "false",
         PGO: String(variant.pgo), LTO: String(variant.pgo), CPU_FLAGS: cpuFlags,
         DOCS: String(variant.docs === true), MESON: String(variant.meson === true),
-        EXTRA_PACKAGES: "sqlite-dev", CONTAINER_ENV: "ACTION_TEST_ENV EXPECTED_STDLIB",
+        EXTRA_PACKAGES: "sqlite-dev", CONTAINER_ENV: "ACTION_TEST_ENV ACTION_TEST_CXX EXPECTED_STDLIB",
         CACHE_ENABLED: "true", BUILDMASTER_DATADIR: datadir,
         RUNNER_TEMP: temp, GITHUB_WORKSPACE: workspace,
         MSSQL_HOST: "127.0.0.1", MSSQL_PORT: port,
-        ACTION_TEST_ENV: "forwarded", EXPECTED_STDLIB: variant.stdlib
+        ACTION_TEST_ENV: "forwarded", ACTION_TEST_CXX: variant.cxx, EXPECTED_STDLIB: variant.stdlib
       };
       const result = spawnSync("bash", ["-euo", "pipefail", "-c", script], {
         cwd: workspace, env, encoding: "utf8", timeout: 300000, maxBuffer: 8 * 1024 * 1024
