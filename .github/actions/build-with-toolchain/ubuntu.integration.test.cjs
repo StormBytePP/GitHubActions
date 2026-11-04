@@ -74,8 +74,20 @@ test("Ubuntu toolchain, build and documentation steps work together", {
       'extern "C" int probe(const char* value) { gate.notify_all(); gate.wait(1); std::string text(value); text += "probe"; return text.size(); }',
       ""
     ].join("\n"));
-    fs.writeFileSync(path.join(workspace, "probe-test.cpp"),
-      '#include <iostream>\nextern "C" int probe(const char*);\nint main() { std::cout << "probe\\n"; return probe("go") == 7 ? 0 : 1; }\n');
+    fs.writeFileSync(path.join(workspace, "probe-test.cpp"), [
+      "#include <cstdlib>",
+      "#include <iostream>",
+      "#include <string>",
+      'extern "C" int probe(const char*);',
+      'int main() {',
+      '  const char* cxx = std::getenv("CXX");',
+      '  const char* expected = std::getenv("ACTION_TEST_CXX");',
+      '  if (!cxx || !expected || std::string(cxx) != expected) return 2;',
+      '  std::cout << "probe\\n";',
+      '  return probe("go") == 7 ? 0 : 1;',
+      '}',
+      ""
+    ].join("\n"));
     fs.writeFileSync(path.join(workspace, "stdlib-probe.cpp"), [
       "#include <bits/c++config.h>",
       "#if !defined(_GLIBCXX_RELEASE) || _GLIBCXX_RELEASE < 16",
@@ -142,6 +154,7 @@ export BUILDMASTER_DATADIR="" PGO=true LTO=true CPU_FLAGS="$TEST_CPU_FLAGS"
 cd "$TEST_WORKSPACE"
 bash "$TEST_ROOT/gcc-alternatives.sh"
 export COMPILER=gcc CXX_STDLIB=libstdc++ INSTALL_PREFIX="$TEST_WORKSPACE/install-gcc"
+export CC=gcc CXX=g++ ACTION_TEST_CXX=g++
 bash "$TEST_ROOT/configure-gcc.sh"
 cmake --build build-gcc -j"$(nproc)"
 if [ "$ACTUAL_PGO" != true ]; then ctest --test-dir build-gcc --no-tests=error --output-on-failure; fi
@@ -155,6 +168,7 @@ bash "$TEST_ROOT/linker.sh"
 bash "$TEST_ROOT/clang-library-path.sh"
 while IFS= read -r setting; do export "$setting"; done < "$GITHUB_ENV"
 export COMPILER=clang CXX_STDLIB=libstdc++ INSTALL_PREFIX="$TEST_WORKSPACE/install-clang-stdcxx"
+export CC=clang CXX=clang++-22 ACTION_TEST_CXX=clang++-22
 export CMAKE_OPTIONS='-DPROBE_QUOTED="hello world" -DPROBE_EXPECT_LIBSTDCPP16=ON -DPROBE_LINK_GCC_LIBRARY=ON'
 bash "$TEST_ROOT/configure-clang-stdcxx.sh"
 cmake --build build-clang-stdcxx -j"$(nproc)"
@@ -186,6 +200,7 @@ fi
 readelf --version-info "$runtime_stdlib" > "$TEST_ROOT/runtime-libstdcxx-versions"
 grep -Fq 'GLIBCXX_3.4.35' "$TEST_ROOT/runtime-libstdcxx-versions"
 export CXX_STDLIB=libc++ INSTALL_PREFIX="$TEST_WORKSPACE/install-clang-cxx"
+export CC=clang CXX=clang++-22 ACTION_TEST_CXX=clang++-22
 export CMAKE_OPTIONS='-DPROBE_QUOTED="hello world"'
 bash "$TEST_ROOT/configure-clang-cxx.sh"
 cmake --build build-clang-cxx -j"$(nproc)"

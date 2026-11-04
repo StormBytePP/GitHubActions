@@ -33,9 +33,10 @@ upload an installed package to an existing GitHub tag release.
 | `lto` | unchanged | `true`/`false` sets `ENABLE_LTO=ON/OFF`. Empty leaves the CMake option unchanged. |
 | `cpu-baseline` | `auto` | Target CPU flags for C and C++. `auto` selects the StormByte baseline below; `none` adds nothing; any other value is used verbatim and must contain `-march=`, `-mcpu=`, or `/arch:`. |
 
-When CTest is enabled, the action exposes the selected C and C++ compilers as
-`CC` and `CXX`, including inside Alpine, so tests that launch nested CMake
-configurations use the same toolchain as the main build.
+The action exposes the selected C and C++ compilers as `CC` and `CXX` during
+configuration, PGO training and explicit CTest runs, including inside Alpine.
+Tests that launch nested CMake configurations therefore use the same toolchain
+as the main build.
 
 `pgo` or `lto` fails early if `cmake-options` sets the same option to the
 opposite value. These inputs are intended for projects that define

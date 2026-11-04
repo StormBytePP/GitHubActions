@@ -942,6 +942,8 @@ runs:
         INSTALL_PREFIX: ${{ steps.options.outputs.install_prefix }}
         CXX_STDLIB: ${{ steps.options.outputs.cxx_stdlib }}
         CPU_FLAGS: ${{ steps.options.outputs.cpu_flags }}
+        CC: ${{ steps.toolchain.outputs.c_compiler }}
+        CXX: ${{ steps.toolchain.outputs.cxx_compiler }}
       run: |
         set -euo pipefail
 
@@ -1008,6 +1010,8 @@ runs:
         LTO: ${{ steps.options.outputs.lto }}
         CPU_FLAGS: ${{ steps.options.outputs.cpu_flags }}
         INSTALL_PREFIX: ${{ steps.options.outputs.install_prefix }}
+        CC: ${{ steps.toolchain.outputs.c_compiler }}
+        CXX: ${{ steps.toolchain.outputs.cxx_compiler }}
       run: |
         $ErrorActionPreference = "Stop"
         $toolchain = "${{ steps.options.outputs.compiler }}"

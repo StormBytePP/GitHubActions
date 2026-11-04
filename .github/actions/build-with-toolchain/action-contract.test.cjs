@@ -42,6 +42,14 @@ function output(file) {
   return result;
 }
 
+function stepDefinition(file, name) {
+  const text = fs.readFileSync(file, "utf8");
+  const start = text.indexOf(`    - name: ${name}\n`);
+  assert.notEqual(start, -1, `Missing step: ${name}`);
+  const next = text.indexOf("\n    - name: ", start + 1);
+  return text.slice(start, next === -1 ? text.length : next);
+}
+
 function resolveOptions(f, overrides = {}) {
   const env = {
     INPUT_COMPILER: "",
@@ -83,6 +91,19 @@ function resolveOptions(f, overrides = {}) {
   const result = execute(script, env, f.workspace);
   return { result, values: result.status === 0 ? output(env.GITHUB_OUTPUT) : {} };
 }
+
+test("selected compilers are available during configuration and CTest", () => {
+  for (const name of ["Configure CMake (Linux/macOS)", "Configure CMake (Windows)"]) {
+    const definition = stepDefinition(buildAction, name);
+    assert.match(definition, /CC: \$\{\{ steps\.toolchain\.outputs\.c_compiler \}\}/);
+    assert.match(definition, /CXX: \$\{\{ steps\.toolchain\.outputs\.cxx_compiler \}\}/);
+  }
+  for (const name of ["Run tests (Linux/macOS)", "Run tests (Windows)"]) {
+    const definition = stepDefinition(buildAction, name);
+    assert.match(definition, /CC: \$\{\{ steps\.toolchain\.outputs\.c_compiler \}\}/);
+    assert.match(definition, /CXX: \$\{\{ steps\.toolchain\.outputs\.cxx_compiler \}\}/);
+  }
+});
 
 test("legacy aliases work and explicit canonical values take precedence", () => fixture(f => {
   const { result, values } = resolveOptions(f, {
