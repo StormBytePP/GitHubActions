@@ -27,6 +27,8 @@ also installs common source-build tools: Perl, OpenSSL, NASM, YASM, Flex,
 Bison, pkg-config, Autotools, Git, curl, and archive tools. Clang includes the
 matching compiler-rt package for PGO. musl builds do not use this action; the
 main build action installs its toolchain and equivalent tools inside Alpine.
+On Ubuntu, `clang` also installs GCC 16 and its libstdc++ development headers;
+`clang-libc++` uses LLVM's libc++ instead.
 The default GCC 16 and Clang 22 packages require an Ubuntu release that
 provides them; use `ubuntu-26.04` for the StormByte baseline.
 

@@ -169,6 +169,32 @@ test("standalone Windows toolchains reject ARM64 and non-MSVC compilers", () => 
   }
 }));
 
+test("Ubuntu toolchain package resolution provides GCC headers for Clang with libstdc++", () => fixture(f => {
+  for (const [compiler, version, packages, gccVersion] of [
+    ["gcc", "", "gcc-16 g++-16", "16"],
+    ["gcc", "15", "gcc-15 g++-15", "15"],
+    ["clang", "", "gcc-16 g++-16", "16"],
+    ["clang", "21", "gcc-16 g++-16", "16"],
+    ["clang-libc++", "", "", "16"]
+  ]) {
+    const suffix = `${compiler}-${version || "default"}`;
+    const env = {
+      GITHUB_ENV: path.join(f.root, `toolchain-env-${suffix}`),
+      GITHUB_OUTPUT: path.join(f.root, `toolchain-output-${suffix}`)
+    };
+    const script = step(toolchainAction, "Resolve versions and validate toolchain", {
+      "inputs.toolchain": compiler, "inputs.version": version,
+      "runner.os": "Linux", "runner.arch": "X64"
+    });
+    const result = execute(script, env, f.workspace);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(output(env.GITHUB_OUTPUT).gcc_packages, packages);
+    assert.equal(output(env.GITHUB_ENV).GCC_VERSION, gccVersion);
+  }
+  assert.match(fs.readFileSync(toolchainAction, "utf8"),
+    /^\s+\$\{\{ steps\.resolve\.outputs\.gcc_packages \}\}\s*$/m);
+}));
+
 test("Ninja's real binary takes precedence over the pip launcher in later steps", () => fixture(f => {
   const tools = path.join(f.root, "tools");
   const ninjaBin = path.join(f.root, "ninja-bin");

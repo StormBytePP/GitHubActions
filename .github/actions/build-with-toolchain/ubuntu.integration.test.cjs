@@ -29,6 +29,7 @@ test("Ubuntu toolchain, build and documentation steps work together", {
     fs.writeFileSync(path.join(workspace, "CMakeLists.txt"), [
       "cmake_minimum_required(VERSION 3.28)",
       "project(action_probe LANGUAGES C CXX)",
+      "set(CMAKE_CXX_STANDARD 20)",
       'option(ENABLE_TEST "" ON)',
       'option(ENABLE_LTO "" OFF)',
       "set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ${ENABLE_LTO})",
@@ -43,6 +44,9 @@ test("Ubuntu toolchain, build and documentation steps work together", {
       '  message(FATAL_ERROR "quoted CMake options were not preserved")',
       "endif()",
       "add_library(probe SHARED probe.cpp)",
+      "if(PROBE_EXPECT_LIBSTDCPP16)",
+      "  add_library(stdlib_probe OBJECT stdlib-probe.cpp)",
+      "endif()",
       "install(TARGETS probe LIBRARY DESTINATION lib)",
       'add_custom_target(documentation COMMAND "${CMAKE_COMMAND}" -E touch "${CMAKE_BINARY_DIR}/docs-built")',
       "if(ENABLE_TEST)",
@@ -55,15 +59,37 @@ test("Ubuntu toolchain, build and documentation steps work together", {
       "add_executable(probe_test ../probe-test.cpp)",
       "target_link_libraries(probe_test PRIVATE probe)",
       'add_test(NAME probe_test COMMAND "$<TARGET_FILE:probe_test>")',
+      "if(PROBE_LINK_GCC_LIBRARY)",
+      "  add_executable(gcc_library_test ../probe-test.cpp)",
+      '  target_link_libraries(gcc_library_test PRIVATE "${CMAKE_SOURCE_DIR}/install-gcc/lib/libprobe.so")',
+      '  add_test(NAME gcc_library_test COMMAND "$<TARGET_FILE:gcc_library_test>")',
+      "endif()",
       ""
     ].join("\n"));
-    fs.writeFileSync(path.join(workspace, "probe.cpp"),
-      '#include <string>\nextern "C" int probe(const char* value) { std::string text(value); text += "probe"; return text.size(); }\n');
+    fs.writeFileSync(path.join(workspace, "probe.cpp"), [
+      "#include <atomic>",
+      "#include <cstdint>",
+      "#include <string>",
+      "static std::atomic<std::uint64_t> gate{0};",
+      'extern "C" int probe(const char* value) { gate.notify_all(); gate.wait(1); std::string text(value); text += "probe"; return text.size(); }',
+      ""
+    ].join("\n"));
     fs.writeFileSync(path.join(workspace, "probe-test.cpp"),
       '#include <iostream>\nextern "C" int probe(const char*);\nint main() { std::cout << "probe\\n"; return probe("go") == 7 ? 0 : 1; }\n');
+    fs.writeFileSync(path.join(workspace, "stdlib-probe.cpp"), [
+      "#include <bits/c++config.h>",
+      "#if !defined(_GLIBCXX_RELEASE) || _GLIBCXX_RELEASE < 16",
+      '#error "Clang must use GCC 16 or newer libstdc++ headers"',
+      "#endif",
+      ""
+    ].join("\n"));
     if (actualPgo) fs.copyFileSync(actualPgo, path.join(workspace, "pgo.cmake"));
     fs.writeFileSync(path.join(root, "bin", "sudo"), '#!/bin/sh\nexec "$@"\n', { mode: 0o755 });
 
+    fs.writeFileSync(path.join(root, "resolve-clang.sh"),
+      step(toolchainAction, "Resolve versions and validate toolchain", {
+        "inputs.toolchain": "clang", "inputs.version": "", "runner.os": "Linux", "runner.arch": arch
+      }));
     for (const compiler of ["gcc", "clang"]) {
       fs.writeFileSync(path.join(root, `${compiler}-alternatives.sh`),
         step(toolchainAction, "Register compiler alternatives (Linux)", {
@@ -72,6 +98,8 @@ test("Ubuntu toolchain, build and documentation steps work together", {
     }
     fs.writeFileSync(path.join(root, "linker.sh"),
       step(buildAction, "Setup LLVM linker tools (Linux clang / clang-libc++)"));
+    fs.writeFileSync(path.join(root, "clang-library-path.sh"),
+      step(toolchainAction, "Add LLVM library directory (Linux clang)"));
     for (const [name, compiler] of [["gcc", "gcc"], ["clang-stdcxx", "clang"], ["clang-cxx", "clang"]]) {
       fs.writeFileSync(path.join(root, `configure-${name}.sh`),
         step(buildAction, "Configure CMake (Linux/macOS)", {
@@ -92,16 +120,23 @@ test("Ubuntu toolchain, build and documentation steps work together", {
     fs.writeFileSync(path.join(root, "run.sh"), `#!/bin/bash
 set -euo pipefail
 trap 'chown -R "$TEST_UID:$TEST_GID" "$TEST_ROOT"' EXIT
+export GITHUB_PATH="$TEST_ROOT/github-path" GITHUB_ENV="$TEST_ROOT/github-env"
+export GITHUB_OUTPUT="$TEST_ROOT/toolchain-output"
+bash "$TEST_ROOT/resolve-clang.sh"
+read -r gcc_package gxx_package < <(sed -n 's/^gcc_packages=//p' "$GITHUB_OUTPUT")
+if [[ -z "$gcc_package" || -z "$gxx_package" ]]; then
+  echo "Clang did not request GCC and libstdc++ development packages" >&2
+  exit 1
+fi
 apt-get update -o Acquire::http::Timeout=15 -o Acquire::Retries=1 -qq
 if ! DEBIAN_FRONTEND=noninteractive apt-get install -qq -y --no-install-recommends \\
   ninja-build build-essential cmake pkg-config autoconf automake libtool perl openssl nasm yasm bison flex \\
-  ca-certificates curl git zip unzip xz-utils doxygen graphviz gcc-16 g++-16 clang-22 clang++-22 lld-22 llvm-22 \\
+  ca-certificates curl git zip unzip xz-utils doxygen graphviz "$gcc_package" "$gxx_package" clang-22 clang++-22 lld-22 llvm-22 \\
   libclang-rt-22-dev libc++-22-dev libc++abi-22-dev libunwind-22-dev > "$TEST_ROOT/apt.log" 2>&1; then
   tail -n 40 "$TEST_ROOT/apt.log" >&2
   exit 1
 fi
 export PATH="$TEST_ROOT/bin:$PATH" GCC_VERSION=16 CLANG_VERSION=22
-export GITHUB_PATH="$TEST_ROOT/github-path" GITHUB_ENV="$TEST_ROOT/github-env"
 export ACTION_PATH="$ACTION_DIR" CMAKE_OPTIONS='-DPROBE_QUOTED="hello world"'
 export BUILDMASTER_DATADIR="" PGO=true LTO=true CPU_FLAGS="$TEST_CPU_FLAGS"
 cd "$TEST_WORKSPACE"
@@ -109,23 +144,52 @@ bash "$TEST_ROOT/gcc-alternatives.sh"
 export COMPILER=gcc CXX_STDLIB=libstdc++ INSTALL_PREFIX="$TEST_WORKSPACE/install-gcc"
 bash "$TEST_ROOT/configure-gcc.sh"
 cmake --build build-gcc -j"$(nproc)"
-if [ "$ACTUAL_PGO" != true ]; then ctest --test-dir build-gcc --output-on-failure; fi
+if [ "$ACTUAL_PGO" != true ]; then ctest --test-dir build-gcc --no-tests=error --output-on-failure; fi
 cmake --install build-gcc
 readelf -d install-gcc/lib/libprobe.so | grep -F 'libstdc++.so'
+readelf --version-info install-gcc/lib/libprobe.so > "$TEST_ROOT/gcc-probe-versions"
+grep -Fq 'GLIBCXX_3.4.35' "$TEST_ROOT/gcc-probe-versions"
 bash "$TEST_ROOT/clang-alternatives.sh"
 export PATH="/usr/lib/llvm-22/bin:$PATH"
 bash "$TEST_ROOT/linker.sh"
+bash "$TEST_ROOT/clang-library-path.sh"
 while IFS= read -r setting; do export "$setting"; done < "$GITHUB_ENV"
 export COMPILER=clang CXX_STDLIB=libstdc++ INSTALL_PREFIX="$TEST_WORKSPACE/install-clang-stdcxx"
+export CMAKE_OPTIONS='-DPROBE_QUOTED="hello world" -DPROBE_EXPECT_LIBSTDCPP16=ON -DPROBE_LINK_GCC_LIBRARY=ON'
 bash "$TEST_ROOT/configure-clang-stdcxx.sh"
 cmake --build build-clang-stdcxx -j"$(nproc)"
-if [ "$ACTUAL_PGO" != true ]; then ctest --test-dir build-clang-stdcxx --output-on-failure; fi
+if [ "$ACTUAL_PGO" != true ]; then ctest --test-dir build-clang-stdcxx --no-tests=error --output-on-failure; fi
 cmake --install build-clang-stdcxx
 readelf -d install-clang-stdcxx/lib/libprobe.so | grep -F 'libstdc++.so'
+clang_stdlib="$(clang++-22 -print-file-name=libstdc++.so)"
+if [[ ! -f "$clang_stdlib" ]]; then
+  echo "Clang cannot locate libstdc++.so: $clang_stdlib" >&2
+  exit 1
+fi
+readelf --version-info "$clang_stdlib" > "$TEST_ROOT/clang-libstdcxx-versions"
+grep -Fq 'GLIBCXX_3.4.35' "$TEST_ROOT/clang-libstdcxx-versions"
+if [ "$ACTUAL_PGO" = true ]; then
+  gcc_library_test=build-clang-stdcxx/pgo-instr/test/gcc_library_test
+else
+  gcc_library_test=build-clang-stdcxx/test/gcc_library_test
+fi
+dependencies="$(ldd "$gcc_library_test")"
+if ! grep -Fq "$TEST_WORKSPACE/install-gcc/lib/libprobe.so" <<< "$dependencies"; then
+  echo "Clang test did not load the GCC-built probe" >&2
+  exit 1
+fi
+runtime_stdlib="$(awk '$1 == "libstdc++.so.6" && $2 == "=>" {print $3}' <<< "$dependencies")"
+if [[ ! -f "$runtime_stdlib" ]]; then
+  echo "Cannot locate the libstdc++ loaded at runtime: $runtime_stdlib" >&2
+  exit 1
+fi
+readelf --version-info "$runtime_stdlib" > "$TEST_ROOT/runtime-libstdcxx-versions"
+grep -Fq 'GLIBCXX_3.4.35' "$TEST_ROOT/runtime-libstdcxx-versions"
 export CXX_STDLIB=libc++ INSTALL_PREFIX="$TEST_WORKSPACE/install-clang-cxx"
+export CMAKE_OPTIONS='-DPROBE_QUOTED="hello world"'
 bash "$TEST_ROOT/configure-clang-cxx.sh"
 cmake --build build-clang-cxx -j"$(nproc)"
-if [ "$ACTUAL_PGO" != true ]; then ctest --test-dir build-clang-cxx --output-on-failure; fi
+if [ "$ACTUAL_PGO" != true ]; then ctest --test-dir build-clang-cxx --no-tests=error --output-on-failure; fi
 cmake --install build-clang-cxx
 readelf -d install-clang-cxx/lib/libprobe.so | grep -F 'libc++.so'
 export ACTION_PATH="$DOCS_DIR" EXTRA_CMAKE_OPTIONS='-DPROBE_QUOTED="hello world"'

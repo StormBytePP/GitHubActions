@@ -53,6 +53,7 @@ runs:
         TOOLCHAIN="${{ inputs.toolchain }}"
         VER="${{ inputs.version }}"
         OS="${{ runner.os }}"
+        GCC_VER=16
 
         if [[ "$OS" == "Windows" && "${{ runner.arch }}" != "X64" ]]; then
           echo "::error::Windows toolchains are supported only on X64"
@@ -65,13 +66,14 @@ runs:
 
         case "$TOOLCHAIN" in
           gcc)
-            echo "GCC_VERSION=${VER:-16}" >> "$GITHUB_ENV"
+            GCC_VER="${VER:-16}"
+            echo "GCC_VERSION=${GCC_VER}" >> "$GITHUB_ENV"
             echo "CLANG_VERSION=22" >> "$GITHUB_ENV"
-            echo "TOOLCHAIN_VERSION=${VER:-16}" >> "$GITHUB_ENV"
+            echo "TOOLCHAIN_VERSION=${GCC_VER}" >> "$GITHUB_ENV"
             ;;
           clang|clang-libc++)
             echo "CLANG_VERSION=${VER:-22}" >> "$GITHUB_ENV"
-            echo "GCC_VERSION=16" >> "$GITHUB_ENV"
+            echo "GCC_VERSION=${GCC_VER}" >> "$GITHUB_ENV"
             echo "TOOLCHAIN_VERSION=${VER:-22}" >> "$GITHUB_ENV"
             ;;
           msvc|clang-cl)
@@ -86,6 +88,12 @@ runs:
             exit 1
             ;;
         esac
+
+        if [[ "$TOOLCHAIN" == "gcc" || "$TOOLCHAIN" == "clang" ]]; then
+          echo "gcc_packages=gcc-${GCC_VER} g++-${GCC_VER}" >> "$GITHUB_OUTPUT"
+        else
+          echo "gcc_packages=" >> "$GITHUB_OUTPUT"
+        fi
 
         echo "✅ Resolved toolchain=$TOOLCHAIN on $OS (version=${VER:-default})"
 
@@ -103,7 +111,7 @@ runs:
           pkg-config autoconf automake libtool
           perl openssl nasm yasm bison flex
           ca-certificates curl git zip unzip xz-utils
-          ${{ inputs.toolchain == 'gcc' && format('gcc-{0} g++-{0}', env.GCC_VERSION) || '' }}
+          ${{ steps.resolve.outputs.gcc_packages }}
           ${{ (inputs.toolchain == 'clang' || inputs.toolchain == 'clang-libc++') && format('clang-{0} clang++-{0} lld-{0} llvm-{0} libclang-rt-{0}-dev', env.CLANG_VERSION) || '' }}
           ${{ inputs.toolchain == 'clang-libc++' && format('libc++-{0}-dev libc++abi-{0}-dev libunwind-{0}-dev', env.CLANG_VERSION) || '' }}
           ${{ inputs.ccache-key != '' && 'ccache' || '' }}
