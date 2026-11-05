@@ -1475,7 +1475,7 @@ runs:
           -e BUILDMASTER_DATADIR -e RUNNER_TEMP -e GITHUB_WORKSPACE \
           "${docker_env[@]}" \
           alpine:3.24 /bin/sh -eu -c '
-            packages="bash build-base cmake pkgconf ca-certificates curl git zip unzip tar xz python3 py3-pip autoconf automake libtool perl openssl nasm yasm linux-headers bison flex su-exec"
+            packages="bash build-base cmake pkgconf ca-certificates curl git zip unzip tar xz python3 py3-pip autoconf automake libtool perl openssl nasm yasm linux-headers bison flex su-exec jemalloc"
             [ "$COMPILER" != clang ] || packages="$packages clang22 clang22-extra-tools lld22 llvm22 compiler-rt"
             [ "$CXX_STDLIB" != libc++ ] || packages="$packages libc++-dev libc++-static llvm-libunwind-dev"
             [ "$CACHE_ENABLED" != true ] || packages="$packages ccache"
@@ -1523,7 +1523,11 @@ runs:
             source "$ACTION_PATH/configure-common.sh"
             prepare_cmake_options
             cmake_args+=("${CONFIGURE_ARGS[@]}")
-            cmake "${cmake_args[@]}"
+            # musl's allocator returns memory to the kernel so eagerly that compilers spend
+            # much of their time page-faulting, which is especially costly on x86-64 VMs.
+            # Tests and installation keep the native allocator.
+            BUILD_ALLOCATOR=/usr/lib/libjemalloc.so.2
+            LD_PRELOAD="$BUILD_ALLOCATOR" cmake "${cmake_args[@]}"
 
             if [[ "$INSTALL_ENABLED" == true || "$DEPLOY" == true ]]; then
               configured_prefix="$INSTALL_PREFIX"
@@ -1548,9 +1552,9 @@ runs:
 
             jobs="$(nproc)"
             if [[ -n "$BUILD_TARGET" ]]; then
-              ninja -C "$BUILD_DIR" -j"$jobs" "$BUILD_TARGET"
+              LD_PRELOAD="$BUILD_ALLOCATOR" ninja -C "$BUILD_DIR" -j"$jobs" "$BUILD_TARGET"
             else
-              ninja -C "$BUILD_DIR" -j"$jobs"
+              LD_PRELOAD="$BUILD_ALLOCATOR" ninja -C "$BUILD_DIR" -j"$jobs"
             fi
             if [[ "$CTEST_ENABLED" == true ]]; then
               parse_action_arguments "$CTEST_OPTIONS" "ctest-options"

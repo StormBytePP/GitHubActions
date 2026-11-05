@@ -108,7 +108,10 @@ OpenSSL, NASM, YASM, Flex, Bison, pkg-config, Autotools, and the Clang profile
 runtime. Alpine installs their native equivalents, an actual Ninja binary,
 and, for Clang, compiler-rt, `clang-scan-deps` for C++ modules and the
 matching LLVM tools. Meson and Doxygen
-remain controlled by `meson` and `docs`.
+remain controlled by `meson` and `docs`. CMake configuration and the Ninja
+build preload jemalloc in Alpine: musl's allocator makes compilers page-fault
+heavily, which slows builds considerably on x64 runners. Tests and
+installation use musl's native allocator.
 
 Use `extra-packages` for project-specific dependencies: they are installed
 with APT, apk, Homebrew, or Chocolatey for the selected build environment.
